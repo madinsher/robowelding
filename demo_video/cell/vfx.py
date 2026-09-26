@@ -9,14 +9,16 @@ build(arc_empty, weld_intervals, collection=None) -> dict
 setup_compositor(scene) -> None
     Glare (bloom) + subtle vignette on the scene compositor.
 laser_line(sensor_empty, intervals, collection=None) -> object
-    Red laser line + narrow red spot for the seam-search shot.
+    Red laser line projected onto the part (ray cast per frame), a faint red fan from the sensor
+    window to the line and a narrow red spot, for the seam-search shot.
 bake_particles(scene) -> None
     Fill the spark particle caches (needed before rendering an isolated still; an animation render
     steps the frames itself).
 
 Conventions: metres, Z up, FPS from cell.layout.  All objects go to the "VFX" collection unless
 another one is given.  Nothing outside that collection is touched, except the scene's EEVEE
-volumetric settings (set once in ``build`` so the fume plume stays cheap).
+volumetric settings (set once in ``build`` so the fume plume stays cheap) and the current frame,
+which ``laser_line`` steps through the scan interval (and restores) to project the line.
 """
 import math
 import random
@@ -28,20 +30,42 @@ from mathutils import Vector, Matrix
 from . import layout as L
 
 # ------------------------------------------------------------------ tunables
-ARC_LIGHT_POWER = 500.0          # W; EEVEE point light, flickers +/- ARC_FLICKER
+ARC_LIGHT_POWER = 160.0           # W; EEVEE point light, flickers +/- ARC_FLICKER
 ARC_LIGHT_RANGE = 3.0             # m; EEVEE custom cutoff so the arc does not light the whole hall
-ARC_FLICKER = 0.25
+ARC_LIGHT_BACK = 0.006            # m; the light sits this far back from the wire tip: just below the contact tip (which would shadow it) but off the steel
+ARC_LIGHT_VOLUME = 0.015          # light scattering in the fume plume (a glow at the base, not a white cloud)
+ARC_FLICKER = 0.4
 ARC_FLICKER_HZ = 10.0
-ARC_LIGHT_COLOR = (0.72, 0.82, 1.0)
-ARC_CORE_RADIUS = 0.003           # 6 mm core sphere
-ARC_GLOW_RADIUS = 0.026           # soft halo sphere
-SPARK_RATE = 320.0                # particles / s
-SPARK_LIFE = (0.3, 0.8)           # s (min, max)
-SPARK_SPEED = 2.2                 # m/s along the reflected torch direction
+ARC_LIGHT_COLOR = (0.62, 0.75, 1.0)
+ARC_CORE_RADIUS = 0.002           # 4 mm core sphere
+ARC_CORE_STRENGTH = 40.0
+ARC_GLOW_RADIUS = 0.012           # soft halo sphere (~2x the nozzle diameter with the flicker)
+ARC_GLOW_STRENGTH = (12.0, 0.4)   # emission at the centre / at the rim
+SPARK_RATE = 110.0                # streaks / s
+SPARK_LIFE = (0.25, 0.7)          # s (min, max)
+SPARK_SPEED = 1.7                 # m/s along the reflected torch direction
+SPARK_COOL_DIST = 0.5             # m from the arc where a streak is fully cooled (dark red)
+DROPLET_RATE = 10.0               # big slow spatter droplets / s (0 disables the system)
+DROPLET_LIFE = (0.5, 1.0)
+DROPLET_SPEED = 1.1
 SMOKE_FADE_IN = 0.4               # s
 SMOKE_FADE_OUT = 1.5              # s
-LASER_LENGTH = 0.060
-LASER_WIDTH = 0.0015
+SMOKE_BOX = (0.5, 0.5, 1.0)       # m; the column rises ~0.9 m above the arc
+SMOKE_DENSITY = 110.0
+SMOKE_RISE = 0.5                  # m/s upward drift of the wisps
+LASER_LENGTH = 0.110              # m, on the part
+LASER_WIDTH = 0.003
+LASER_STRENGTH = 120.0
+LASER_COLOR = (1.0, 0.05, 0.03)
+LASER_FAN_ALPHA = 0.06
+LASER_SPOT_POWER = 60.0           # W
+LASER_SPOT_SIZE = 0.12            # rad (cone angle)
+LASER_SPOT_BLEND = 0.15
+LASER_SEGMENTS = 40               # rays per frame across the line
+LASER_STANDOFF = 0.080            # m along the sensor's +Z when nothing is hit (TCP 35 mm above the seam)
+# laser window (emitter) in the sensor frame when no "torch_laser_lens" object exists: sensor box on
+# the neck side of the torch, 126 mm back along the tool axis (see robot_build._build_torch)
+LASER_WINDOW_FALLBACK = (0.078, 0.0, -0.126)
 
 
 # ------------------------------------------------------------------ helpers
@@ -71,12 +95,12 @@ def _parent_local(child, parent, location=(0, 0, 0), rotation=None):
         child.rotation_euler = rotation
 
 
-def _mesh_object(name, bm, col, material=None):
+def _mesh_object(name, bm, col, material=None, smooth=True):
     me = bpy.data.meshes.new(name)
     bm.to_mesh(me)
     bm.free()
     for p in me.polygons:
-        p.use_smooth = True
+        p.use_smooth = smooth
     ob = bpy.data.objects.new(name, me)
     if material is not None:
         me.materials.append(material)
@@ -88,14 +112,6 @@ def _uv_sphere(name, radius, col, material=None, segments=24, rings=12, scale=(1
     bmesh.ops.create_uvsphere(bm, u_segments=segments, v_segments=rings, radius=radius)
     if scale != (1, 1, 1):
         bmesh.ops.scale(bm, vec=Vector(scale), verts=bm.verts)
-    return _mesh_object(name, bm, col, material)
-
-
-def _quad(name, size_x, size_y, col, material=None):
-    bm = bmesh.new()
-    hx, hy = size_x / 2, size_y / 2
-    v = [bm.verts.new((x, y, 0)) for x, y in ((-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy))]
-    bm.faces.new(v)
     return _mesh_object(name, bm, col, material)
 
 
@@ -147,7 +163,8 @@ def _flicker_series(intervals, seed=7):
             yield f, 1.0 + ARC_FLICKER * r
 
 
-def _emission_material(name, color, strength):
+def _emission_material(name, color, strength, alpha=None):
+    """Plain emitter; with ``alpha`` a blended, unlit translucent emitter (no shadow, no backface cull)."""
     m = bpy.data.materials.new(name)
     m.use_nodes = True
     nt = m.node_tree
@@ -157,13 +174,24 @@ def _emission_material(name, color, strength):
     em = nt.nodes.new("ShaderNodeEmission")
     em.inputs["Color"].default_value = (*color, 1.0)
     em.inputs["Strength"].default_value = strength
-    nt.links.new(em.outputs[0], out.inputs["Surface"])
+    if alpha is None:
+        nt.links.new(em.outputs[0], out.inputs["Surface"])
+        return m
+    tr = nt.nodes.new("ShaderNodeBsdfTransparent")
+    mix = nt.nodes.new("ShaderNodeMixShader")
+    mix.inputs["Fac"].default_value = alpha
+    nt.links.new(tr.outputs[0], mix.inputs[1])
+    nt.links.new(em.outputs[0], mix.inputs[2])
+    nt.links.new(mix.outputs[0], out.inputs["Surface"])
+    m.surface_render_method = 'BLENDED'
+    m.show_transparent_back = True
+    m.use_backface_culling = False
     return m
 
 
 # ------------------------------------------------------------------ materials
 def _glow_material():
-    """View-facing soft halo: bright blue-white centre fading to a warm transparent rim."""
+    """View-facing soft halo: bright blue-white centre fading fast to a warm transparent rim."""
     m = bpy.data.materials.new("vfx_arc_glow")
     m.use_nodes = True
     nt = m.node_tree
@@ -171,7 +199,7 @@ def _glow_material():
         nt.nodes.remove(n)
     out = nt.nodes.new("ShaderNodeOutputMaterial")
     lw = nt.nodes.new("ShaderNodeLayerWeight")          # Facing: 0 at centre, 1 at the rim
-    lw.inputs["Blend"].default_value = 0.5
+    lw.inputs["Blend"].default_value = 0.35
     inv = nt.nodes.new("ShaderNodeMath"); inv.operation = 'SUBTRACT'
     inv.inputs[0].default_value = 1.0
     nt.links.new(lw.outputs["Facing"], inv.inputs[1])
@@ -188,7 +216,8 @@ def _glow_material():
     em = nt.nodes.new("ShaderNodeEmission")
     nt.links.new(ramp.outputs["Color"], em.inputs["Color"])
     st = nt.nodes.new("ShaderNodeMath"); st.operation = 'MULTIPLY_ADD'
-    st.inputs[1].default_value = 40.0; st.inputs[2].default_value = 1.0        # dim warm rim, hot centre
+    st.inputs[1].default_value = ARC_GLOW_STRENGTH[0] - ARC_GLOW_STRENGTH[1]
+    st.inputs[2].default_value = ARC_GLOW_STRENGTH[1]                          # dim warm rim, hot centre
     nt.links.new(pw.outputs[0], st.inputs[0])
     nt.links.new(st.outputs[0], em.inputs["Strength"])
     tr = nt.nodes.new("ShaderNodeBsdfTransparent")
@@ -219,14 +248,14 @@ def _drive_world_location(nt, target):
     return outs
 
 
-def _spark_material(arc_empty):
-    """Hot emissive streak that cools from white-yellow to dark red as it flies away from the arc.
+def _spark_material(arc_empty, name="vfx_spark", cool_dist=SPARK_COOL_DIST, strength=(5.0, 0.5)):
+    """Hot emissive streak that cools from yellow-white to dark red as it flies away from the arc.
 
     EEVEE does not evaluate the Particle Info node, so the "age" is approximated by the distance
     from the arc (sparks travel ~2 m/s, so distance ~ age) and per-particle variation comes from
     Object Info -> Random, which EEVEE does provide for instances.
     """
-    m = bpy.data.materials.new("vfx_spark")
+    m = bpy.data.materials.new(name)
     m.use_nodes = True
     nt = m.node_tree
     for n in list(nt.nodes):
@@ -239,16 +268,16 @@ def _spark_material(arc_empty):
     dist = nt.nodes.new("ShaderNodeVectorMath"); dist.operation = 'DISTANCE'
     nt.links.new(geo.outputs["Position"], dist.inputs[0]); nt.links.new(arc.outputs[0], dist.inputs[1])
     age = nt.nodes.new("ShaderNodeMath"); age.operation = 'DIVIDE'; age.use_clamp = True
-    age.inputs[1].default_value = 0.75                      # ~fully cooled 0.75 m from the arc
+    age.inputs[1].default_value = cool_dist                 # fully cooled this far from the arc
     nt.links.new(dist.outputs["Value"], age.inputs[0])
     ramp = nt.nodes.new("ShaderNodeValToRGB")
     cr = ramp.color_ramp
-    cr.elements[0].position = 0.0; cr.elements[0].color = (1.0, 0.9, 0.6, 1)
-    e = cr.elements.new(0.3); e.color = (1.0, 0.55, 0.12, 1)
+    cr.elements[0].position = 0.0; cr.elements[0].color = (1.0, 0.62, 0.22, 1)   # saturated hot orange (AgX bleaches brighter emitters)
+    e = cr.elements.new(0.3); e.color = (1.0, 0.40, 0.06, 1)
     e = cr.elements.new(0.7); e.color = (0.85, 0.2, 0.03, 1)
     cr.elements[-1].position = 1.0; cr.elements[-1].color = (0.35, 0.05, 0.0, 1)
     nt.links.new(age.outputs[0], ramp.inputs["Fac"])
-    # strength = (1 - age)^1.2 * 3 * (0.6 + 0.8 * random) + 0.3  (kept low: AgX bleaches strong emitters)
+    # strength = (1 - age)^1.2 * s0 * (0.6 + 0.8 * random) + s1  (saturated orange survives AgX)
     inv = nt.nodes.new("ShaderNodeMath"); inv.operation = 'SUBTRACT'; inv.inputs[0].default_value = 1.0
     nt.links.new(age.outputs[0], inv.inputs[1])
     pw = nt.nodes.new("ShaderNodeMath"); pw.operation = 'POWER'; pw.inputs[1].default_value = 1.2
@@ -260,7 +289,7 @@ def _spark_material(arc_empty):
     mul = nt.nodes.new("ShaderNodeMath"); mul.operation = 'MULTIPLY'
     nt.links.new(pw.outputs[0], mul.inputs[0]); nt.links.new(rnd.outputs[0], mul.inputs[1])
     st = nt.nodes.new("ShaderNodeMath"); st.operation = 'MULTIPLY_ADD'
-    st.inputs[1].default_value = 3.0; st.inputs[2].default_value = 0.3
+    st.inputs[1].default_value = strength[0]; st.inputs[2].default_value = strength[1]
     nt.links.new(mul.outputs[0], st.inputs[0])
     em = nt.nodes.new("ShaderNodeEmission")
     nt.links.new(ramp.outputs["Color"], em.inputs["Color"])
@@ -279,8 +308,8 @@ def _smoke_material():
         nt.nodes.remove(n)
     out = nt.nodes.new("ShaderNodeOutputMaterial")
     vol = nt.nodes.new("ShaderNodeVolumePrincipled")
-    vol.inputs["Color"].default_value = (0.18, 0.18, 0.19, 1)
-    vol.inputs["Anisotropy"].default_value = 0.35
+    vol.inputs["Color"].default_value = (0.42, 0.42, 0.44, 1)      # light grey: scatters the hall light
+    vol.inputs["Anisotropy"].default_value = 0.55
     nt.links.new(vol.outputs[0], out.inputs["Volume"])
 
     def math(op, a, b=None, c=None, clamp=False):
@@ -299,12 +328,12 @@ def _smoke_material():
     sep = nt.nodes.new("ShaderNodeSeparateXYZ")
     nt.links.new(tc.outputs["Object"], sep.inputs[0])
     h = math('ADD', sep.outputs["Z"], 0.5)                    # 0 at the bottom .. 1 at the top
-    # column radius grows with height: r_max = 0.08 + 0.32*h ; radial mask = 1 - (r/r_max)^2
+    # column radius grows with height: r_max = 0.06 + 0.40*h (box units) ; radial mask = 1 - (r/r_max)^2
     r2 = math('ADD', math('POWER', sep.outputs["X"], 2.0), math('POWER', sep.outputs["Y"], 2.0))
-    rmax = math('MULTIPLY_ADD', h, 0.32, 0.08)
+    rmax = math('MULTIPLY_ADD', h, 0.40, 0.06)
     radial = math('SUBTRACT', 1.0, math('DIVIDE', r2, math('POWER', rmax, 2.0)), clamp=True)
     # vertical envelope: quick rise from the bottom, fade to nothing at the top
-    vert = math('MULTIPLY', math('MINIMUM', math('DIVIDE', h, 0.15), 1.0), math('SUBTRACT', 1.0, math('POWER', h, 1.5)), clamp=True)
+    vert = math('MULTIPLY', math('MINIMUM', math('DIVIDE', h, 0.12), 1.0), math('SUBTRACT', 1.0, math('POWER', h, 1.5)), clamp=True)
     mask = math('MULTIPLY', radial, vert)
     # drifting wisps: world-space noise moving upward with time (driver on the Value node)
     geo = nt.nodes.new("ShaderNodeNewGeometry")
@@ -313,25 +342,66 @@ def _smoke_material():
     drv.type = 'SCRIPTED'
     drv.expression = "frame"
     rise = nt.nodes.new("ShaderNodeCombineXYZ")
-    nt.links.new(math('MULTIPLY', t.outputs[0], -0.3 / L.FPS), rise.inputs["Z"])   # 0.3 m/s upward drift
+    nt.links.new(math('MULTIPLY', t.outputs[0], -SMOKE_RISE / L.FPS), rise.inputs["Z"])   # upward drift
     wobble = math('MULTIPLY', t.outputs[0], 0.03 / L.FPS)
     nt.links.new(wobble, rise.inputs["X"])
     vm = nt.nodes.new("ShaderNodeVectorMath"); vm.operation = 'ADD'
     nt.links.new(geo.outputs["Position"], vm.inputs[0]); nt.links.new(rise.outputs[0], vm.inputs[1])
     noise = nt.nodes.new("ShaderNodeTexNoise")
-    noise.inputs["Scale"].default_value = 12.0
+    noise.inputs["Scale"].default_value = 7.0
     noise.inputs["Detail"].default_value = 4.0
     noise.inputs["Roughness"].default_value = 0.55
     nt.links.new(vm.outputs[0], noise.inputs["Vector"])
-    wisps = math('SUBTRACT', math('MULTIPLY', noise.outputs["Fac"], 2.6), 0.95, clamp=True)
+    wisps = math('SUBTRACT', math('MULTIPLY', noise.outputs["Fac"], 3.0), 0.9, clamp=True)
     # keyframed on/off + fade from the box object's "smoke" property
     attr = nt.nodes.new("ShaderNodeAttribute"); attr.attribute_type = 'OBJECT'; attr.attribute_name = "smoke"
-    dens = math('MULTIPLY', math('MULTIPLY', mask, wisps), math('MULTIPLY', attr.outputs["Fac"], 30.0))
+    dens = math('MULTIPLY', math('MULTIPLY', mask, wisps), math('MULTIPLY', attr.outputs["Fac"], SMOKE_DENSITY))
     nt.links.new(dens, vol.inputs["Density"])
     return m
 
 
 # ------------------------------------------------------------------ public: build
+def _particle_system(emitter, name, seed, interval, rate, life, instance, size, size_random,
+                     speed, normal_factor, factor_random, drag, gravity, mass):
+    """One emitter particle system for the frames in ``interval``; instances are aligned with their velocity."""
+    s, e = interval
+    emitter.modifiers.new(name, 'PARTICLE_SYSTEM')
+    psys = emitter.particle_systems[-1]
+    psys.seed = seed
+    ps = psys.settings
+    ps.name = f"vfx_{name}"
+    ps.type = 'EMITTER'
+    ps.count = max(1, int(rate * (e - s + 1) / L.FPS))
+    ps.frame_start, ps.frame_end = s, e
+    ps.lifetime = 0.5 * (life[0] + life[1]) * L.FPS
+    ps.lifetime_random = (life[1] - life[0]) / (life[0] + life[1])
+    ps.emit_from = 'FACE'
+    ps.distribution = 'RAND'
+    ps.use_emit_random = True
+    # velocity: mostly back along -Z of the torch frame (reflected off the part), spread outward
+    ps.normal_factor = normal_factor
+    ps.object_align_factor = (0.0, 0.0, -speed)
+    ps.factor_random = factor_random
+    ps.object_factor = 0.2
+    ps.physics_type = 'NEWTON'
+    ps.mass = mass
+    ps.drag_factor = drag
+    ps.effector_weights.gravity = gravity
+    ps.timestep = 1.0 / L.FPS
+    ps.render_type = 'OBJECT'
+    ps.instance_object = instance
+    ps.particle_size = size
+    ps.size_random = size_random
+    ps.use_rotations = True
+    ps.rotation_mode = 'VEL'
+    ps.use_dynamic_rotation = True
+    ps.use_rotation_instance = False
+    ps.show_unborn = False
+    ps.use_dead = False
+    ps.display_method = 'DOT'
+    return psys
+
+
 def build(arc_empty, weld_intervals, collection=None):
     """Create all arc effects around ``arc_empty``.
 
@@ -341,24 +411,24 @@ def build(arc_empty, weld_intervals, collection=None):
     scene = bpy.context.scene
     intervals = [(int(s), int(e)) for s, e in weld_intervals if e >= s]
 
-    # --- arc point light (slightly back toward the torch so it never sits inside the surface)
+    # --- arc point light (back toward the torch: never inside the surface, no 1/r^2 blow-out of the steel under it)
     ld = bpy.data.lights.new("ArcLight", 'POINT')
     ld.color = ARC_LIGHT_COLOR
     ld.energy = 0.0
     ld.shadow_soft_size = 0.004
     ld.use_shadow = True
-    ld.volume_factor = 0.004          # a hint of glow in the fume plume, not a white block
+    ld.volume_factor = ARC_LIGHT_VOLUME
     ld.use_custom_distance = True
     ld.cutoff_distance = ARC_LIGHT_RANGE
     light = _link(bpy.data.objects.new("ArcLight", ld), col)
-    _parent_local(light, arc_empty, location=(0, 0, -0.004))
+    _parent_local(light, arc_empty, location=(0, 0, -ARC_LIGHT_BACK))
     _switch(ld, "energy", intervals, ARC_LIGHT_POWER, 0.0)
     for f, k in _flicker_series(intervals, seed=11):
         _key(ld, "energy", f, ARC_LIGHT_POWER * k)
     _set_constant(ld)
 
     # --- arc core + soft glow
-    core = _uv_sphere("ArcCore", ARC_CORE_RADIUS, col, _emission_material("vfx_arc_core", (0.75, 0.87, 1.0), 120.0))
+    core = _uv_sphere("ArcCore", ARC_CORE_RADIUS, col, _emission_material("vfx_arc_core", (0.75, 0.87, 1.0), ARC_CORE_STRENGTH))
     _parent_local(core, arc_empty, location=(0, 0, -0.002))
     core.visible_shadow = False
     glow = _uv_sphere("ArcGlow", 1.0, col, _glow_material(), segments=32, rings=16)
@@ -371,11 +441,15 @@ def build(arc_empty, weld_intervals, collection=None):
         _key(glow, "scale", f, (s, s, s))
     _set_constant(glow)
 
-    # --- sparks: emitter icosphere + one particle system per weld interval
+    # --- sparks: emitter icosphere + one streak system (and one sparse droplet system) per weld interval
     spark_mat = _spark_material(arc_empty)
-    spark = _uv_sphere("SparkStreak", 1.0, col, spark_mat, segments=8, rings=6, scale=(4.5, 0.16, 0.16))
-    spark.location = (0, 0, -50.0)    # the instance source itself stays out of every shot
+    spark = _uv_sphere("SparkStreak", 1.0, col, spark_mat, segments=8, rings=6, scale=(2.6, 0.12, 0.12))
+    spark.location = (0, 0, -50.0)    # the instance sources stay out of every shot
     spark.visible_shadow = False
+    drop = _uv_sphere("SparkDroplet", 1.0, col, _spark_material(arc_empty, "vfx_droplet", 0.9, (4.0, 0.6)),
+                      segments=8, rings=6, scale=(1.3, 0.55, 0.55))
+    drop.location = (0, 0, -50.5)
+    drop.visible_shadow = False
     bm = bmesh.new()
     bmesh.ops.create_icosphere(bm, subdivisions=2, radius=0.004)
     emitter = _mesh_object("SparkEmitter", bm, col)
@@ -384,50 +458,19 @@ def build(arc_empty, weld_intervals, collection=None):
     emitter.show_instancer_for_viewport = False
     emitter.visible_shadow = False
     systems = []
-    for i, (s, e) in enumerate(intervals):
-        emitter.modifiers.new(f"sparks_{i}", 'PARTICLE_SYSTEM')
-        psys = emitter.particle_systems[-1]
-        psys.seed = 100 + i
-        ps = psys.settings
-        ps.name = f"vfx_sparks_{i}"
-        ps.type = 'EMITTER'
-        ps.count = max(1, int(SPARK_RATE * (e - s + 1) / L.FPS))
-        ps.frame_start, ps.frame_end = s, e
-        ps.lifetime = 0.5 * (SPARK_LIFE[0] + SPARK_LIFE[1]) * L.FPS
-        ps.lifetime_random = (SPARK_LIFE[1] - SPARK_LIFE[0]) / (SPARK_LIFE[0] + SPARK_LIFE[1])
-        ps.emit_from = 'FACE'
-        ps.distribution = 'RAND'
-        ps.use_emit_random = True
-        # velocity: mostly back along -Z of the torch frame (reflected off the part), spread outward
-        ps.normal_factor = 0.7
-        ps.object_align_factor = (0.0, 0.0, -SPARK_SPEED)
-        ps.factor_random = 1.1
-        ps.object_factor = 0.2
-        ps.physics_type = 'NEWTON'
-        ps.mass = 0.001
-        ps.drag_factor = 0.06
-        ps.effector_weights.gravity = 1.0
-        ps.timestep = 1.0 / L.FPS
-        # render as instanced streaks aligned with their velocity
-        ps.render_type = 'OBJECT'
-        ps.instance_object = spark
-        ps.particle_size = 0.006
-        ps.size_random = 0.6
-        ps.use_rotations = True
-        ps.rotation_mode = 'VEL'
-        ps.use_dynamic_rotation = True
-        ps.use_rotation_instance = False
-        ps.show_unborn = False
-        ps.use_dead = False
-        ps.display_method = 'DOT'
-        systems.append(psys)
+    for i, iv in enumerate(intervals):
+        systems.append(_particle_system(emitter, f"sparks_{i}", 100 + i, iv, SPARK_RATE, SPARK_LIFE, spark,
+                                        0.0045, 0.6, SPARK_SPEED, 0.4, 0.55, 0.03, 1.4, 0.001))
+        if DROPLET_RATE > 0:
+            systems.append(_particle_system(emitter, f"droplets_{i}", 300 + i, iv, DROPLET_RATE, DROPLET_LIFE, drop,
+                                            0.0035, 0.5, DROPLET_SPEED, 0.6, 0.7, 0.02, 1.0, 0.004))
 
-    # --- fume plume: small volume box hovering above the arc (Copy Location, stays upright)
+    # --- fume plume: volume box rising from the arc (Copy Location, stays upright)
     bm = bmesh.new()
     bmesh.ops.create_cube(bm, size=1.0)
     smoke = _mesh_object("FumePlume", bm, col)
-    smoke.scale = (0.45, 0.45, 0.6)
-    smoke.location = (0, 0, 0.26)     # offset added to the arc position (box bottom ~ 0.04 below the arc)
+    smoke.scale = SMOKE_BOX
+    smoke.location = (0, 0, SMOKE_BOX[2] / 2 - 0.05)     # offset added to the arc position (box bottom 5 cm below the arc)
     con = smoke.constraints.new('COPY_LOCATION')
     con.target = arc_empty
     con.use_offset = True
@@ -481,9 +524,9 @@ def setup_compositor(scene):
     glare = nt.nodes.new("CompositorNodeGlare"); glare.location = (-200, 0)
     glare.glare_type = 'BLOOM'
     glare.quality = 'MEDIUM'
-    glare.inputs["Threshold"].default_value = 1.5
-    glare.inputs["Strength"].default_value = 0.22
-    glare.inputs["Size"].default_value = 0.35
+    glare.inputs["Threshold"].default_value = 3.0
+    glare.inputs["Strength"].default_value = 0.15
+    glare.inputs["Size"].default_value = 0.22
     glare.inputs["Saturation"].default_value = 1.0
     nt.links.new(rl.outputs["Image"], glare.inputs["Image"])
     mask = nt.nodes.new("CompositorNodeEllipseMask"); mask.location = (-500, -300)
@@ -505,27 +548,178 @@ def setup_compositor(scene):
 
 
 # ------------------------------------------------------------------ public: laser line
-def laser_line(sensor_empty, intervals, collection=None):
-    """Red laser line (60 x 1.5 mm quad, 20 mm along the sensor's +Z) and a narrow red spot light.
+def _root_of(ob):
+    while ob.parent is not None:
+        ob = ob.parent
+    return ob
 
-    Both are on only inside ``intervals``.  Returns the quad; the spot light "LaserSpot" is parented
-    to ``sensor_empty`` next to it.
+
+def _cast(scene, depsgraph, origin, direction, skip, max_dist=2.0):
+    """First scene hit along the ray that is not in ``skip`` (names): (location, normal) or None."""
+    o = Vector(origin)
+    d = Vector(direction).normalized()
+    left = max_dist
+    for _ in range(12):
+        ok, loc, nrm, _idx, ob, _m = scene.ray_cast(depsgraph, o, d, distance=left)
+        if not ok:
+            return None
+        if ob is not None and ob.name not in skip:
+            if nrm.dot(d) > 0:          # exited through a back face: flip so the strip sits on the outside
+                nrm = -nrm
+            return loc, nrm
+        step = (loc - o).length + 1e-4
+        o = o + d * step
+        left -= step
+        if left <= 0:
+            return None
+    return None
+
+
+def _laser_window(sensor_empty):
+    """Laser emitter position in the sensor frame: the torch's "torch_laser_lens" if it exists, else a fallback."""
+    lens = bpy.data.objects.get("torch_laser_lens")
+    if lens is not None:
+        return sensor_empty.matrix_world.inverted() @ lens.matrix_world.translation
+    return Vector(LASER_WINDOW_FALLBACK)
+
+
+def _project_line(scene, depsgraph, sensor_empty, window_local, skip):
+    """Ray-cast the laser fan (plane: window, target point, sensor Y) onto the scene.
+
+    Returns (points, normals, widths) in the sensor frame: LASER_SEGMENTS + 1 samples across the line.
+    """
+    Mw = sensor_empty.matrix_world
+    R = Mw.to_3x3()
+    Mi = Mw.inverted()
+    origin_w = Mw.translation
+    z_w = (R @ Vector((0, 0, 1))).normalized()
+    y_w = (R @ Vector((0, 1, 0))).normalized()
+    probe = _cast(scene, depsgraph, origin_w, z_w, skip, max_dist=0.6)
+    target_w = probe[0] if probe is not None else origin_w + z_w * LASER_STANDOFF
+    win_w = Mw @ window_local
+    c = target_w - win_w
+    dist0 = max(c.length, 0.05)
+    c.normalize()
+    y_w = (y_w - y_w.dot(c) * c).normalized()          # exact perpendicular to the central ray
+    th_max = math.atan2(LASER_LENGTH / 2, dist0)
+    pts, nrms, wids = [], [], []
+    for k in range(LASER_SEGMENTS + 1):
+        th = -th_max + 2 * th_max * k / LASER_SEGMENTS
+        d = c * math.cos(th) + y_w * math.sin(th)
+        hit = _cast(scene, depsgraph, win_w, d, skip, max_dist=dist0 * 3.0)
+        if hit is None:
+            p, n = win_w + d * dist0, -d
+        else:
+            p, n = hit
+        w = n.cross(y_w)
+        if w.length < 1e-6:
+            w = n.cross(c)
+        w.normalize()
+        pts.append(Mi @ p)
+        nrms.append((Mi.to_3x3() @ n).normalized())
+        wids.append((Mi.to_3x3() @ w).normalized())
+    return pts, nrms, wids
+
+
+def _strip_coords(pts, nrms, wids):
+    out = []
+    for p, n, w in zip(pts, nrms, wids):
+        q = p + n * 0.0015
+        out.append(q - w * (LASER_WIDTH / 2))
+        out.append(q + w * (LASER_WIDTH / 2))
+    return out
+
+
+def _fan_coords(window_local, pts):
+    return [Vector(window_local)] + [Vector(p) for p in pts]
+
+
+def _mesh_with_keys(name, col, material, coords_by_frame, faces, basis):
+    """Mesh whose vertices are keyed per frame with relative shape keys (one key per frame, constant switch)."""
+    me = bpy.data.meshes.new(name)
+    me.from_pydata([tuple(v) for v in basis], [], faces)
+    me.update()
+    for p in me.polygons:
+        p.use_smooth = True
+    me.materials.append(material)
+    ob = bpy.data.objects.new(name, me)
+    _link(ob, col)
+    ob.shape_key_add(name="Basis", from_mix=False)
+    for f, coords in coords_by_frame:
+        kb = ob.shape_key_add(name=f"f{f:04d}", from_mix=False)
+        for i, v in enumerate(coords):
+            kb.data[i].co = v
+        kb.value = 0.0
+        kb.keyframe_insert("value", frame=f - 1)
+        kb.value = 1.0
+        kb.keyframe_insert("value", frame=f)
+        kb.value = 0.0
+        kb.keyframe_insert("value", frame=f + 1)
+    _set_constant(ob.data.shape_keys)
+    return ob
+
+
+def laser_line(sensor_empty, intervals, collection=None):
+    """Red laser line projected onto the part, a faint red fan from the sensor window and a red spot.
+
+    For every frame of ``intervals`` the fan (LASER_SEGMENTS rays from the laser window, across the
+    sensor's Y axis, aimed at the point under the sensor's +Z) is ray cast against the scene — skipping
+    the robot the sensor belongs to and the VFX objects — and the hit points become a shape key, so the
+    line follows the steel surface (groove, hub, curvature) while the torch scans.  Frames outside the
+    intervals scale everything to zero.  Returns the line object; "LaserFan" and the spot light
+    "LaserSpot" are parented to ``sensor_empty`` next to it.
     """
     col = _collection("VFX", collection)
+    scene = bpy.context.scene
     intervals = [(int(s), int(e)) for s, e in intervals if e >= s]
-    quad = _quad("LaserLine", LASER_LENGTH, LASER_WIDTH, col, _emission_material("vfx_laser", (1.0, 0.02, 0.01), 40.0))
-    _parent_local(quad, sensor_empty, location=(0, 0, 0.02))
-    quad.visible_shadow = False
-    _switch(quad, "scale", intervals, (1.0, 1.0, 1.0), (0.0, 0.0, 0.0))
+    frames = sorted({f for s, e in intervals for f in range(s, e + 1)})
+    skip = {o.name for o in col.objects}
+    root = _root_of(sensor_empty)
+    skip |= {o.name for o in bpy.data.objects if _root_of(o) is root or o.hide_render}
+
+    cur = scene.frame_current
+    if frames:
+        scene.frame_set(frames[0])
+    bpy.context.view_layer.update()
+    window = _laser_window(sensor_empty)
+    line_keys, fan_keys = [], []
+    for f in frames:
+        scene.frame_set(f)
+        dg = bpy.context.evaluated_depsgraph_get()
+        pts, nrms, wids = _project_line(scene, dg, sensor_empty, window, skip)
+        line_keys.append((f, _strip_coords(pts, nrms, wids)))
+        fan_keys.append((f, _fan_coords(window, pts)))
+    if not frames:                      # nothing to project: a straight line at the nominal stand-off
+        pts = [Vector((0, (k / LASER_SEGMENTS - 0.5) * LASER_LENGTH, LASER_STANDOFF)) for k in range(LASER_SEGMENTS + 1)]
+        nrms = [Vector((0, 0, -1))] * len(pts)
+        wids = [Vector((1, 0, 0))] * len(pts)
+        line_keys.append((1, _strip_coords(pts, nrms, wids)))
+        fan_keys.append((1, _fan_coords(window, pts)))
+    scene.frame_set(cur)
+
+    n = LASER_SEGMENTS + 1
+    strip_faces = [(2 * i, 2 * i + 1, 2 * i + 3, 2 * i + 2) for i in range(n - 1)]
+    fan_faces = [(0, i + 1, i + 2) for i in range(n - 1)]
+    line = _mesh_with_keys("LaserLine", col, _emission_material("vfx_laser", LASER_COLOR, LASER_STRENGTH),
+                           line_keys, strip_faces, line_keys[0][1])
+    fan = _mesh_with_keys("LaserFan", col, _emission_material("vfx_laser_fan", LASER_COLOR, 2.0, alpha=LASER_FAN_ALPHA),
+                          fan_keys, fan_faces, fan_keys[0][1])
+    for ob in (line, fan):
+        _parent_local(ob, sensor_empty)
+        ob.visible_shadow = False
+        _switch(ob, "scale", intervals, (1.0, 1.0, 1.0), (0.0, 0.0, 0.0))
+
+    # narrow red spot from the window toward the line centre (soft red wash on the steel around the line)
     ld = bpy.data.lights.new("LaserSpot", 'SPOT')
-    ld.color = (1.0, 0.03, 0.01)
+    ld.color = LASER_COLOR
     ld.energy = 0.0
-    ld.spot_size = math.radians(6.0)
-    ld.spot_blend = 0.4
+    ld.spot_size = LASER_SPOT_SIZE
+    ld.spot_blend = LASER_SPOT_BLEND
     ld.shadow_soft_size = 0.002
     ld.use_shadow = False
     spot = _link(bpy.data.objects.new("LaserSpot", ld), col)
-    # spot lights shine along their local -Z: flip so it shines along the sensor's +Z (into the part)
-    _parent_local(spot, sensor_empty, location=(0, 0, 0.0), rotation=(math.pi, 0, 0))
-    _switch(ld, "energy", intervals, 12.0, 0.0)
-    return quad
+    mid = fan_keys[0][1][1 + n // 2]
+    aim = (mid - window).normalized()
+    _parent_local(spot, sensor_empty, location=window, rotation=aim.to_track_quat('-Z', 'Y').to_euler())
+    _switch(ld, "energy", intervals, LASER_SPOT_POWER, 0.0)
+    return line

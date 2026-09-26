@@ -88,8 +88,9 @@ def _noise_variation(m, scale=8.0, strength=0.12, rough_var=0.15, coord='OBJECT'
 # ------------------------------------------------------------------ robot / machines
 @register("abb_orange")
 def _abb_orange():
-    m = _base("abb_orange", _srgb("#FF6A13"), metallic=0.0, roughness=0.32, coat=0.35, spec=0.6)
-    return _noise_variation(m, scale=6, strength=0.08, rough_var=0.08)
+    # industrial powder coat, not a car-paint clear coat: low coat weight, matte-ish, visible dust/rough variation
+    m = _base("abb_orange", _srgb("#FF6A13"), metallic=0.0, roughness=0.42, coat=0.12, spec=0.6)
+    return _noise_variation(m, scale=6, strength=0.16, rough_var=0.14)
 
 
 @register("abb_grey")
@@ -124,7 +125,27 @@ def _copper():
 
 @register("machined_steel")
 def _machined_steel():
-    return _base("machined_steel", (0.55, 0.55, 0.57), metallic=1.0, roughness=0.42)
+    return _base("machined_steel", (0.55, 0.55, 0.57), metallic=1.0, roughness=0.5)
+
+
+@register("cast_iron")
+def _cast_iron():
+    """Matte grey cast iron (positioner faceplate, machine castings): dull, fine-grained, no mirror reflections."""
+    m = _base("cast_iron", (0.18, 0.18, 0.19), metallic=0.6, roughness=0.7, spec=0.4)
+    m = _noise_variation(m, scale=60, strength=0.2, rough_var=0.1)
+    nt = m.node_tree
+    b = nt.nodes["Principled BSDF"]
+    tc = nt.nodes.new("ShaderNodeTexCoord")
+    grain = nt.nodes.new("ShaderNodeTexNoise")
+    grain.inputs["Scale"].default_value = 400.0
+    grain.inputs["Detail"].default_value = 2.0
+    nt.links.new(tc.outputs["Object"], grain.inputs["Vector"])
+    bump = nt.nodes.new("ShaderNodeBump")
+    bump.inputs["Strength"].default_value = 0.25
+    bump.inputs["Distance"].default_value = 0.0006
+    nt.links.new(grain.outputs["Fac"], bump.inputs["Height"])
+    nt.links.new(bump.outputs["Normal"], b.inputs["Normal"])
+    return m
 
 
 @register("galvanized")
@@ -176,7 +197,7 @@ def _emissive(color="#FFFFFF", strength=5.0):
 @register("steel_pipe")
 def _steel_pipe():
     """Hot-rolled carbon steel with mill scale and rust patches (as in the reference photos)."""
-    m = _base("steel_pipe", (0.075, 0.062, 0.055), metallic=0.5, roughness=0.62)
+    m = _base("steel_pipe", (0.075, 0.062, 0.055), metallic=0.6, roughness=0.62)
     nt = m.node_tree
     b = nt.nodes["Principled BSDF"]
     tc = nt.nodes.new("ShaderNodeTexCoord")
@@ -187,8 +208,8 @@ def _steel_pipe():
     ramp = nt.nodes.new("ShaderNodeValToRGB")
     cr = ramp.color_ramp
     cr.elements[0].position = 0.42; cr.elements[0].color = (0.11, 0.095, 0.085, 1)     # dark mill scale
-    e = cr.elements.new(0.55); e.color = (0.2, 0.17, 0.14, 1)                             # grey-brown
-    cr.elements[-1].position = 0.72; cr.elements[-1].color = (0.36, 0.15, 0.06, 1)        # rust
+    e = cr.elements.new(0.55); e.color = (0.15, 0.13, 0.11, 1)                            # dark grey-brown
+    cr.elements[-1].position = 0.78; cr.elements[-1].color = (0.40, 0.16, 0.05, 1)        # rust (rarer, more saturated)
     nt.links.new(n1.outputs["Fac"], ramp.inputs["Fac"])
     mix = nt.nodes.new("ShaderNodeMix"); mix.data_type = 'RGBA'; mix.blend_type = 'MULTIPLY'; mix.inputs["Factor"].default_value = 0.6
     nt.links.new(ramp.outputs["Color"], mix.inputs[6])
@@ -196,7 +217,7 @@ def _steel_pipe():
     nt.links.new(n2.outputs["Fac"], r2.inputs["Fac"])
     nt.links.new(r2.outputs["Color"], mix.inputs[7])
     nt.links.new(mix.outputs[2], b.inputs["Base Color"])
-    mr = nt.nodes.new("ShaderNodeMapRange"); mr.inputs["To Min"].default_value = 0.5; mr.inputs["To Max"].default_value = 0.8
+    mr = nt.nodes.new("ShaderNodeMapRange"); mr.inputs["To Min"].default_value = 0.45; mr.inputs["To Max"].default_value = 0.75
     nt.links.new(n1.outputs["Fac"], mr.inputs["Value"]); nt.links.new(mr.outputs["Result"], b.inputs["Roughness"])
     bump = nt.nodes.new("ShaderNodeBump"); bump.inputs["Strength"].default_value = 0.15; bump.inputs["Distance"].default_value = 0.002
     nt.links.new(n2.outputs["Fac"], bump.inputs["Height"]); nt.links.new(bump.outputs["Normal"], b.inputs["Normal"])
@@ -276,20 +297,17 @@ def _fence_mesh(color="#F2B400", pitch=0.05, wire=0.004):
 
 # ------------------------------------------------------------------ weld bead with shader-driven progress
 N_ARCS = 4
+HEAT_WINDOW = 0.09          # fraction of the circumference glowing behind the arc (~75 mm on DN250)
 
 
-def _arc_mask(nt, u, i):
-    """Nodes for one weld arc slot i: reads object props w{i}_start, w{i}_prog, w{i}_dir, w{i}_hot.
+def _arc_mask(nt, u, i, heat_window=HEAT_WINDOW):
+    """Nodes for one weld arc slot i.  Reads ONE object attribute "w{i}" = [start, prog, dir, hot] (a 4-float array
+    property kept in sync with the scalar props w{i}_start/_prog/_dir/_hot by drivers, see init_bead_props): EEVEE
+    supports only 8 object-attribute uniforms per material, so 16 scalar lookups would silently read 0.
 
     Returns (welded_mask [0/1], heat [0..1]).  rel = floored_mod((u - start) * dir, 1)
-    welded = rel < prog ; heat = clamp(1 - (prog - rel) / 0.07) * hot  (only when welded)
+    welded = rel < prog ; heat = clamp(1 - (prog - rel) / heat_window) * hot  (only when welded)
     """
-    def attr(name):
-        a = nt.nodes.new("ShaderNodeAttribute")
-        a.attribute_type = 'OBJECT'
-        a.attribute_name = name
-        return a.outputs["Fac"]
-
     def math(op, a, b=None, c=None):
         n = nt.nodes.new("ShaderNodeMath")
         n.operation = op
@@ -303,14 +321,19 @@ def _arc_mask(nt, u, i):
                 nt.links.new(v, n.inputs[k])
         return n.outputs[0]
 
-    start, prog, dr, hot = attr(f"w{i}_start"), attr(f"w{i}_prog"), attr(f"w{i}_dir"), attr(f"w{i}_hot")
+    a = nt.nodes.new("ShaderNodeAttribute")
+    a.attribute_type = 'OBJECT'
+    a.attribute_name = f"w{i}"
+    sep = nt.nodes.new("ShaderNodeSeparateColor")
+    nt.links.new(a.outputs["Color"], sep.inputs[0])
+    start, prog, dr, hot = sep.outputs[0], sep.outputs[1], sep.outputs[2], a.outputs["Alpha"]
     d = math('SUBTRACT', u, start)
     d = math('MULTIPLY', d, dr)
     rel = math('FLOORED_MODULO', d, 1.0)
     welded = math('LESS_THAN', rel, prog)
     # heat behind the arc
     gap = math('SUBTRACT', prog, rel)
-    heat = math('DIVIDE', gap, 0.045)
+    heat = math('DIVIDE', gap, heat_window)
     heat = math('SUBTRACT', 1.0, heat)
     heat = math('MAXIMUM', heat, 0.0)
     heat = math('MINIMUM', heat, 1.0)
@@ -319,17 +342,12 @@ def _arc_mask(nt, u, i):
     return welded, heat
 
 
-@register("weld_bead")
-def _weld_bead():
-    m = bpy.data.materials.new("weld_bead")
-    m.use_nodes = True
-    nt = m.node_tree
-    b = nt.nodes["Principled BSDF"]
-    out = nt.nodes["Material Output"]
-    b.inputs["Base Color"].default_value = (0.5, 0.5, 0.52, 1)
-    b.inputs["Metallic"].default_value = 0.9
-    b.inputs["Roughness"].default_value = 0.38
-    # angle around the object's local Z -> u in [0,1)
+def _progress_nodes(nt, heat_window=HEAT_WINDOW):
+    """Shared node group for ring objects whose local Z is the seam axis.
+
+    Returns (u, sep, welded_any, heat_any): u = angle around local Z in [0,1), sep = SeparateXYZ of object coords,
+    welded_any/heat_any = union over the N_ARCS slots (object props w{i}_*).
+    """
     tc = nt.nodes.new("ShaderNodeTexCoord")
     sep = nt.nodes.new("ShaderNodeSeparateXYZ")
     nt.links.new(tc.outputs["Object"], sep.inputs[0])
@@ -342,7 +360,7 @@ def _weld_bead():
     u = u.outputs[0]
     welded_any, heat_any = None, None
     for i in range(N_ARCS):
-        w, h = _arc_mask(nt, u, i)
+        w, h = _arc_mask(nt, u, i, heat_window)
         if welded_any is None:
             welded_any, heat_any = w, h
         else:
@@ -350,42 +368,201 @@ def _weld_bead():
             nt.links.new(welded_any, mx.inputs[0]); nt.links.new(w, mx.inputs[1]); welded_any = mx.outputs[0]
             mh = nt.nodes.new("ShaderNodeMath"); mh.operation = 'MAXIMUM'
             nt.links.new(heat_any, mh.inputs[0]); nt.links.new(h, mh.inputs[1]); heat_any = mh.outputs[0]
-    # alpha = welded
-    nt.links.new(welded_any, b.inputs["Alpha"])
-    # emission = heat^2 * hot colour
-    p2 = nt.nodes.new("ShaderNodeMath"); p2.operation = 'POWER'; p2.inputs[1].default_value = 2.2
-    nt.links.new(heat_any, p2.inputs[0])
+    return u, sep, welded_any, heat_any
+
+
+def _heat_ramp(nt, heat, power=2.2):
+    """heat [0..1] -> (emission colour socket, heat^power socket): black -> dark red -> orange -> yellow-white."""
+    p2 = nt.nodes.new("ShaderNodeMath"); p2.operation = 'POWER'; p2.inputs[1].default_value = power
+    nt.links.new(heat, p2.inputs[0])
     ramp = nt.nodes.new("ShaderNodeValToRGB")
     cr = ramp.color_ramp
     cr.elements[0].position = 0.0; cr.elements[0].color = (0, 0, 0, 1)
-    e1 = cr.elements.new(0.35); e1.color = (0.6, 0.05, 0.0, 1)
-    e2 = cr.elements.new(0.7); e2.color = (1.0, 0.35, 0.05, 1)
+    e1 = cr.elements.new(0.35); e1.color = (0.75, 0.08, 0.0, 1)
+    e2 = cr.elements.new(0.7); e2.color = (1.0, 0.42, 0.08, 1)
     cr.elements[-1].position = 1.0; cr.elements[-1].color = (1.0, 0.85, 0.5, 1)
     nt.links.new(p2.outputs[0], ramp.inputs["Fac"])
-    nt.links.new(ramp.outputs["Color"], b.inputs["Emission Color"])
-    es = nt.nodes.new("ShaderNodeMath"); es.operation = 'MULTIPLY'; es.inputs[1].default_value = 6.0
-    nt.links.new(p2.outputs[0], es.inputs[0]); nt.links.new(es.outputs[0], b.inputs["Emission Strength"])
-    # ripples: wave texture along the angle
+    return ramp.outputs["Color"], p2.outputs[0]
+
+
+@register("weld_bead")
+def _weld_bead():
+    """Dull grey rippled MIG bead; alpha = welded (4 arc slots), emission = heat behind the arc."""
+    m = bpy.data.materials.new("weld_bead")
+    m.use_nodes = True
+    nt = m.node_tree
+    b = nt.nodes["Principled BSDF"]
+    b.inputs["Base Color"].default_value = (0.22, 0.21, 0.20, 1)
+    b.inputs["Metallic"].default_value = 0.85
+    b.inputs["Roughness"].default_value = 0.62
+    u, sep, welded_any, heat_any = _progress_nodes(nt)
+    # alpha = welded
+    nt.links.new(welded_any, b.inputs["Alpha"])
+    # emission = heat^1.5 * hot colour (gentle power so the tail reads over the whole heat window)
+    col, p2 = _heat_ramp(nt, heat_any, power=1.5)
+    nt.links.new(col, b.inputs["Emission Color"])
+    es = nt.nodes.new("ShaderNodeMath"); es.operation = 'MULTIPLY'; es.inputs[1].default_value = 18.0
+    nt.links.new(p2, es.inputs[0]); nt.links.new(es.outputs[0], b.inputs["Emission Strength"])
+    # ripples: wave texture along the angle (fine, ~4 mm pitch on DN250)
     wave = nt.nodes.new("ShaderNodeTexWave")
     wave.wave_type = 'BANDS'; wave.bands_direction = 'X'
     wave.inputs["Scale"].default_value = 1.0
     wave.inputs["Distortion"].default_value = 1.5; wave.inputs["Detail"].default_value = 2
-    sc = nt.nodes.new("ShaderNodeMath"); sc.operation = 'MULTIPLY'; sc.inputs[1].default_value = 140.0
+    sc = nt.nodes.new("ShaderNodeMath"); sc.operation = 'MULTIPLY'; sc.inputs[1].default_value = 220.0
     nt.links.new(u, sc.inputs[0])
-    comb = nt.nodes.new("ShaderNodeCombineXYZ"); nt.links.new(sc.outputs[0], comb.inputs["X"]); nt.links.new(sep.outputs["Z"], comb.inputs["Y"])
+    # crescent ("stacked dimes") ripples: phase advances with (z / half-width)^2 across the bead
+    zn = nt.nodes.new("ShaderNodeMath"); zn.operation = 'DIVIDE'; zn.inputs[1].default_value = 0.012
+    nt.links.new(sep.outputs["Z"], zn.inputs[0])
+    z2 = nt.nodes.new("ShaderNodeMath"); z2.operation = 'MULTIPLY'; nt.links.new(zn.outputs[0], z2.inputs[0]); nt.links.new(zn.outputs[0], z2.inputs[1])
+    ph = nt.nodes.new("ShaderNodeMath"); ph.operation = 'MULTIPLY_ADD'; ph.inputs[1].default_value = 1.5
+    nt.links.new(z2.outputs[0], ph.inputs[0]); nt.links.new(sc.outputs[0], ph.inputs[2])
+    comb = nt.nodes.new("ShaderNodeCombineXYZ"); nt.links.new(ph.outputs[0], comb.inputs["X"]); nt.links.new(sep.outputs["Z"], comb.inputs["Y"])
     nt.links.new(comb.outputs[0], wave.inputs["Vector"])
-    bump = nt.nodes.new("ShaderNodeBump"); bump.inputs["Strength"].default_value = 0.3; bump.inputs["Distance"].default_value = 0.0015
+    bump = nt.nodes.new("ShaderNodeBump"); bump.inputs["Strength"].default_value = 0.6; bump.inputs["Distance"].default_value = 0.0015
     nt.links.new(wave.outputs["Fac"], bump.inputs["Height"]); nt.links.new(bump.outputs["Normal"], b.inputs["Normal"])
-    # colour: slightly darker/bluer heat tint near the ripples
+    # ripple crests slightly lighter / troughs darker (silica islands, oxide)
+    rr = nt.nodes.new("ShaderNodeValToRGB")
+    rr.color_ramp.elements[0].position = 0.2; rr.color_ramp.elements[0].color = (0.6, 0.6, 0.62, 1)
+    rr.color_ramp.elements[1].position = 0.8; rr.color_ramp.elements[1].color = (1.1, 1.08, 1.05, 1)
+    nt.links.new(wave.outputs["Fac"], rr.inputs["Fac"])
+    mix = nt.nodes.new("ShaderNodeMix"); mix.data_type = 'RGBA'; mix.blend_type = 'MULTIPLY'; mix.inputs["Factor"].default_value = 1.0
+    mix.inputs[6].default_value = b.inputs["Base Color"].default_value[:]
+    nt.links.new(rr.outputs["Color"], mix.inputs[7])
+    nt.links.new(mix.outputs[2], b.inputs["Base Color"])
     m.surface_render_method = 'BLENDED'
     m.use_transparency_overlap = False
     m.use_transparent_shadow = True
     return m
 
 
-def init_bead_props(ob):
+@register("heat_tint")
+def _heat_tint(half_width=0.045, inner=0.015):
+    """Oxide heat-tint band on the base metal beside a bead (ring object whose local Z is the seam axis).
+
+    Colour by |z|: dark HAZ next to the bead -> blue -> straw -> base metal at the edge.  Alpha = welded mask
+    (same 4-slot object props as the bead; spool.py drives them from the bead object) * tint_on, fading out toward the
+    edge.  A faint dull-red emission follows the bead's heat window so the HAZ glows behind the arc too.
+    """
+    m = bpy.data.materials.new("heat_tint")
+    m.use_nodes = True
+    nt = m.node_tree
+    b = nt.nodes["Principled BSDF"]
+    b.inputs["Metallic"].default_value = 0.65
+    b.inputs["Roughness"].default_value = 0.55
+    u, sep, welded_any, heat_any = _progress_nodes(nt)
+    ab = nt.nodes.new("ShaderNodeMath"); ab.operation = 'ABSOLUTE'
+    nt.links.new(sep.outputs["Z"], ab.inputs[0])
+    mr = nt.nodes.new("ShaderNodeMapRange"); mr.inputs["From Min"].default_value = inner; mr.inputs["From Max"].default_value = half_width
+    nt.links.new(ab.outputs[0], mr.inputs["Value"])
+    # slight waviness of the band edge along the seam
+    nz = nt.nodes.new("ShaderNodeTexNoise"); nz.inputs["Scale"].default_value = 80.0; nz.inputs["Detail"].default_value = 2.0
+    tc = nt.nodes.new("ShaderNodeTexCoord")
+    nt.links.new(tc.outputs["Object"], nz.inputs["Vector"])
+    wob = nt.nodes.new("ShaderNodeMath"); wob.operation = 'MULTIPLY_ADD'; wob.inputs[1].default_value = 0.25; wob.inputs[2].default_value = -0.125
+    nt.links.new(nz.outputs["Fac"], wob.inputs[0])
+    fac = nt.nodes.new("ShaderNodeMath"); fac.operation = 'ADD'; fac.use_clamp = True
+    nt.links.new(mr.outputs["Result"], fac.inputs[0]); nt.links.new(wob.outputs[0], fac.inputs[1])
+    ramp = nt.nodes.new("ShaderNodeValToRGB")
+    cr = ramp.color_ramp
+    cr.elements[0].position = 0.0; cr.elements[0].color = (0.10, 0.09, 0.085, 1)     # dark HAZ next to the bead
+    e = cr.elements.new(0.3); e.color = (0.18, 0.23, 0.45, 1)                         # blue oxide
+    e = cr.elements.new(0.6); e.color = (0.46, 0.30, 0.11, 1)                         # straw
+    cr.elements[-1].position = 1.0; cr.elements[-1].color = (0.09, 0.075, 0.065, 1)   # back to the base metal
+    nt.links.new(fac.outputs[0], ramp.inputs["Fac"])
+    nt.links.new(ramp.outputs["Color"], b.inputs["Base Color"])
+    # alpha: strong near the bead, fading to 0 at the band edge; gated by welded mask and object prop "tint_on"
+    alpha = nt.nodes.new("ShaderNodeMapRange"); alpha.inputs["From Min"].default_value = 0.0; alpha.inputs["From Max"].default_value = 1.0
+    alpha.inputs["To Min"].default_value = 0.8; alpha.inputs["To Max"].default_value = 0.0
+    nt.links.new(fac.outputs[0], alpha.inputs["Value"])
+    att = nt.nodes.new("ShaderNodeAttribute"); att.attribute_type = 'OBJECT'; att.attribute_name = "tint_on"
+    # tint_on ramps 0->1 over the whole weld in the animation; the band should be fully there once welded, so saturate x3
+    ton = nt.nodes.new("ShaderNodeMath"); ton.operation = 'MULTIPLY'; ton.inputs[1].default_value = 3.0; ton.use_clamp = True
+    nt.links.new(att.outputs["Fac"], ton.inputs[0])
+    m1 = nt.nodes.new("ShaderNodeMath"); m1.operation = 'MULTIPLY'
+    nt.links.new(alpha.outputs["Result"], m1.inputs[0]); nt.links.new(ton.outputs[0], m1.inputs[1])
+    m2 = nt.nodes.new("ShaderNodeMath"); m2.operation = 'MULTIPLY'
+    nt.links.new(m1.outputs[0], m2.inputs[0]); nt.links.new(welded_any, m2.inputs[1])
+    nt.links.new(m2.outputs[0], b.inputs["Alpha"])
+    # HAZ glow: heat window * (1 - distance from the bead), weaker than the bead itself
+    col, p2 = _heat_ramp(nt, heat_any, power=2.0)
+    nt.links.new(col, b.inputs["Emission Color"])
+    inv = nt.nodes.new("ShaderNodeMath"); inv.operation = 'SUBTRACT'; inv.inputs[0].default_value = 1.0
+    nt.links.new(mr.outputs["Result"], inv.inputs[1])
+    inv2 = nt.nodes.new("ShaderNodeMath"); inv2.operation = 'POWER'; inv2.inputs[1].default_value = 2.0
+    nt.links.new(inv.outputs[0], inv2.inputs[0])
+    es = nt.nodes.new("ShaderNodeMath"); es.operation = 'MULTIPLY'
+    nt.links.new(p2, es.inputs[0]); nt.links.new(inv2.outputs[0], es.inputs[1])
+    es2 = nt.nodes.new("ShaderNodeMath"); es2.operation = 'MULTIPLY'; es2.inputs[1].default_value = 6.0
+    nt.links.new(es.outputs[0], es2.inputs[0]); nt.links.new(es2.outputs[0], b.inputs["Emission Strength"])
+    m.surface_render_method = 'BLENDED'
+    m.use_transparency_overlap = False
+    m.use_transparent_shadow = True
+    return m
+
+
+PROP_KEYS = ("start", "prog", "dir", "hot")
+
+
+def init_bead_props(ob, source=None):
+    """Weld-progress properties on a ring object (bead or heat-tint ring).
+
+    The animation keyframes the scalar props w{i}_start, w{i}_prog, w{i}_dir, w{i}_hot on the BEAD object.  The shaders
+    read the packed 4-float array w{i} (one attribute per slot, see _arc_mask), which drivers keep equal to the scalars
+    of `source` (default: the object itself; a tint ring passes its bead so it follows the same progress).
+    """
+    src = source or ob
+    if src is ob:
+        for i in range(N_ARCS):
+            ob[f"w{i}_start"] = 0.0
+            ob[f"w{i}_prog"] = 0.0
+            ob[f"w{i}_dir"] = 1.0
+            ob[f"w{i}_hot"] = 0.0
     for i in range(N_ARCS):
-        ob[f"w{i}_start"] = 0.0
-        ob[f"w{i}_prog"] = 0.0
-        ob[f"w{i}_dir"] = 1.0
-        ob[f"w{i}_hot"] = 0.0
+        ob[f"w{i}"] = [0.0, 0.0, 1.0, 0.0]
+        for k, key in enumerate(PROP_KEYS):
+            fc = ob.driver_add(f'["w{i}"]', k)
+            drv = fc.driver
+            drv.type = 'AVERAGE'
+            for v in list(drv.variables):
+                drv.variables.remove(v)
+            v = drv.variables.new()
+            v.name = "v"
+            v.type = 'SINGLE_PROP'
+            v.targets[0].id_type = 'OBJECT'
+            v.targets[0].id = src
+            v.targets[0].data_path = f'["w{i}_{key}"]'
+
+
+# ------------------------------------------------------------------ shop markings (paint marker / chalk decals)
+@register("marker_decal")
+def _marker_decal(image=""):
+    """RGBA image decal (paint-marker job markings): colour and alpha from the image, matte, no emission."""
+    m = bpy.data.materials.new("marker_decal")
+    m.use_nodes = True
+    nt = m.node_tree
+    b = nt.nodes["Principled BSDF"]
+    b.inputs["Metallic"].default_value = 0.0
+    b.inputs["Roughness"].default_value = 0.9
+    b.inputs["Specular IOR Level"].default_value = 0.3
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    tex.image = bpy.data.images.get(image)
+    tex.interpolation = 'Linear'
+    tex.extension = 'CLIP'
+    uv = nt.nodes.new("ShaderNodeUVMap")
+    nt.links.new(uv.outputs["UV"], tex.inputs["Vector"])
+    nt.links.new(tex.outputs["Color"], b.inputs["Base Color"])
+    # marker paint wears off on the mill scale: modulate alpha by a fine object-space noise
+    tc = nt.nodes.new("ShaderNodeTexCoord")
+    nz = nt.nodes.new("ShaderNodeTexNoise"); nz.inputs["Scale"].default_value = 300.0; nz.inputs["Detail"].default_value = 3.0
+    nt.links.new(tc.outputs["Object"], nz.inputs["Vector"])
+    wr = nt.nodes.new("ShaderNodeMapRange"); wr.inputs["From Min"].default_value = 0.3; wr.inputs["From Max"].default_value = 0.6
+    wr.inputs["To Min"].default_value = 0.55; wr.inputs["To Max"].default_value = 1.0
+    nt.links.new(nz.outputs["Fac"], wr.inputs["Value"])
+    mul = nt.nodes.new("ShaderNodeMath"); mul.operation = 'MULTIPLY'
+    nt.links.new(tex.outputs["Alpha"], mul.inputs[0]); nt.links.new(wr.outputs["Result"], mul.inputs[1])
+    nt.links.new(mul.outputs[0], b.inputs["Alpha"])
+    m.surface_render_method = 'BLENDED'
+    m.use_transparency_overlap = False
+    m.use_transparent_shadow = True
+    m.use_backface_culling = True
+    return m

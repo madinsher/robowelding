@@ -99,14 +99,19 @@ def build(collection=None, name="spool"):
     beads["B"].rotation_euler = (0, math.pi / 2, 0)      # local Z -> spool +X
     for b in beads.values():
         G.set_parent(b, root)
-    # heat-tint ring under each bead (subtle straw/blue oxide band on the base metal)
+    # heat-tint ring under each bead (straw/blue oxide band with dark HAZ on the base metal); its material reads the
+    # same w{i}_* progress props as the bead, so the band appears behind the arc — drivers copy them from the bead.
+    tints = {}
     for key, b in beads.items():
         ht = _heat_tint_ring(f"{name}_tint_{key}", r_o, col)
         ht.matrix_world = b.matrix_world.copy()
         G.set_parent(ht, root)
+        materials.init_bead_props(ht, source=b)      # packed w{i} arrays driven from the bead's scalar props
+        tints[key] = ht
 
-    # thick chalk-style marking on the pipe (like the shop photos): skip geometry, just a decal-free look
-    return dict(root=root, collection=col, flange=flange, elbow=elbow, pipe=pipe, beads=beads)
+    # paint-marker job markings like the shop photos: one on the pipe leg (+Z side), one on the elbow back (extrados)
+    marks = _markings(name, r_o, col, root)
+    return dict(root=root, collection=col, flange=flange, elbow=elbow, pipe=pipe, beads=beads, tints=tints, marks=marks)
 
 
 def _assign_by_profile(ob, n_prof, seg_indices, mat_index):
@@ -121,7 +126,10 @@ def _assign_by_profile(ob, n_prof, seg_indices, mat_index):
 
 
 def _bead_ring(name, r_o, col):
-    w = L.BEAD_WIDTH
+    # the cap must cover the whole groove mouth (2 x bevel length) or a bright strip of chamfer shows beside the bead
+    r_i = r_o - L.PIPE_WALL
+    bev = (r_o - r_i - 0.0016) / math.tan(math.radians(32))
+    w = max(L.BEAD_WIDTH, 2 * bev + 0.004)
     h = L.BEAD_HEIGHT
     prof = []
     n = 10
@@ -138,45 +146,159 @@ def _bead_ring(name, r_o, col):
     return ob
 
 
+TINT_HALF_WIDTH = 0.045
+
+
 def _heat_tint_ring(name, r_o, col):
-    ob = G.revolve(name, [(r_o + 0.0004, -0.032), (r_o + 0.0004, 0.032), (r_o + 0.0003, 0.032), (r_o + 0.0003, -0.032)], segments=128, collection=col)
-    m = bpy.data.materials.get("heat_tint")
-    if m is None:
-        m = bpy.data.materials.new("heat_tint")
-        m.use_nodes = True
-        nt = m.node_tree
-        b = nt.nodes["Principled BSDF"]
-        b.inputs["Metallic"].default_value = 0.8
-        b.inputs["Roughness"].default_value = 0.45
-        tc = nt.nodes.new("ShaderNodeTexCoord")
-        sep = nt.nodes.new("ShaderNodeSeparateXYZ")
-        nt.links.new(tc.outputs["Object"], sep.inputs[0])
-        ab = nt.nodes.new("ShaderNodeMath"); ab.operation = 'ABSOLUTE'
-        nt.links.new(sep.outputs["Z"], ab.inputs[0])
-        mr = nt.nodes.new("ShaderNodeMapRange"); mr.inputs["From Min"].default_value = 0.009; mr.inputs["From Max"].default_value = 0.032
-        nt.links.new(ab.outputs[0], mr.inputs["Value"])
-        ramp = nt.nodes.new("ShaderNodeValToRGB")
-        cr = ramp.color_ramp
-        cr.elements[0].position = 0.0; cr.elements[0].color = (0.12, 0.11, 0.1, 1)
-        e = cr.elements.new(0.3); e.color = (0.14, 0.16, 0.3, 1)         # blue oxide
-        e = cr.elements.new(0.6); e.color = (0.3, 0.2, 0.09, 1)          # straw
-        cr.elements[-1].position = 1.0; cr.elements[-1].color = (0.09, 0.075, 0.065, 1)
-        nt.links.new(mr.outputs["Result"], ramp.inputs["Fac"])
-        nt.links.new(ramp.outputs["Color"], b.inputs["Base Color"])
-        # alpha fades to the base metal at the edge; driven by "welded" — simply keep visible always but subtle
-        alpha = nt.nodes.new("ShaderNodeMapRange"); alpha.inputs["From Min"].default_value = 0.0; alpha.inputs["From Max"].default_value = 1.0
-        alpha.inputs["To Min"].default_value = 0.55; alpha.inputs["To Max"].default_value = 0.0
-        nt.links.new(mr.outputs["Result"], alpha.inputs["Value"])
-        # visibility gated by object prop "tint_on" (0..1)
-        att = nt.nodes.new("ShaderNodeAttribute"); att.attribute_type = 'OBJECT'; att.attribute_name = "tint_on"
-        mul = nt.nodes.new("ShaderNodeMath"); mul.operation = 'MULTIPLY'
-        nt.links.new(alpha.outputs["Result"], mul.inputs[0]); nt.links.new(att.outputs["Fac"], mul.inputs[1])
-        nt.links.new(mul.outputs[0], b.inputs["Alpha"])
-        m.surface_render_method = 'BLENDED'
-        m.use_transparency_overlap = False
-    ob.data.materials.append(m)
+    hw = TINT_HALF_WIDTH
+    ob = G.revolve(name, [(r_o + 0.0004, -hw), (r_o + 0.0004, hw), (r_o + 0.0003, hw), (r_o + 0.0003, -hw)], segments=128, collection=col)
+    ob.data.materials.append(materials.get("heat_tint", half_width=hw, inner=0.015))
     ob["tint_on"] = 0.0
     return ob
+
+
+# ------------------------------------------------------------------ shop markings
+_FONTS = [
+    "/usr/share/fonts/truetype/freefont/FreeSansBoldOblique.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+]
+
+
+def _marker_image(name, lines, size=(1024, 512), seed=3, grids=()):
+    """RGBA bpy image with hand-written paint-marker text.  lines = [(text, (r,g,b), height_px, x, y, angle_deg)],
+    grids = [(x, y, w, h, nx, ny, (r,g,b), stroke_px)] hand-drawn tally/QC grids."""
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter
+    rng = np.random.default_rng(seed)
+    W, H = size
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    for text, rgb, hpx, x0, y0, ang in lines:
+        font = None
+        for f in _FONTS:
+            try:
+                font = ImageFont.truetype(f, int(hpx)); break
+            except OSError:
+                continue
+        if font is None:
+            font = ImageFont.load_default(size=int(hpx))
+        x = x0
+        top = font.getbbox("Hg")[1]                  # common baseline for every glyph (a hyphen must not float up)
+        for ch in text:
+            if ch == " ":
+                x += hpx * 0.35; continue
+            # each character on its own tile, jittered and rotated a little: a hand, not a font
+            bb = font.getbbox(ch)
+            cw, chh = bb[2] - bb[0] + int(hpx * 0.5), int(hpx * 1.6)
+            tile = Image.new("RGBA", (cw, chh), (0, 0, 0, 0))
+            d = ImageDraw.Draw(tile)
+            ox, oy = int(hpx * 0.25) - bb[0], int(hpx * 0.3) - top
+            # a marker stroke: draw the glyph a few times with sub-pixel offsets, opaque core, slightly uneven paint
+            for dx, dy in ((0, 0), (1.5, 0.5), (-1, 1), (0.5, -1.5)):
+                d.text((ox + dx, oy + dy), ch, font=font, fill=(*rgb, 255), stroke_width=max(1, int(hpx * 0.02)), stroke_fill=(*rgb, 255))
+            rot = ang + rng.uniform(-6, 6)
+            tile = tile.rotate(rot, resample=Image.BICUBIC, expand=False)
+            px = int(x - hpx * 0.25 + rng.uniform(-1, 1) * hpx * 0.04)
+            py = int(y0 - hpx * 0.3 + rng.uniform(-1, 1) * hpx * 0.06 - (x - x0) * math.tan(math.radians(ang)))
+            img.alpha_composite(tile, (max(0, px), max(0, py)))
+            x += (bb[2] - bb[0]) + hpx * 0.1 + rng.uniform(-1, 1) * hpx * 0.03
+    d = ImageDraw.Draw(img)
+    for gx, gy, gw, gh, gnx, gny, rgb, sw in grids:
+        def jl(x0, y0, x1, y1):
+            j = lambda: rng.uniform(-1, 1) * sw * 1.5
+            d.line((x0 + j(), y0 + j(), x1 + j(), y1 + j()), fill=(*rgb, 255), width=int(sw))
+        for k in range(gnx + 1):
+            x = gx + gw * k / gnx; jl(x, gy, x, gy + gh)
+        for k in range(gny + 1):
+            y = gy + gh * k / gny; jl(gx, y, gx + gw, y)
+        # inspector's tick in the first cell
+        cw, chh = gw / gnx, gh / gny
+        jl(gx + cw * 0.2, gy + chh * 0.55, gx + cw * 0.45, gy + chh * 0.85)
+        jl(gx + cw * 0.45, gy + chh * 0.85, gx + cw * 0.9, gy + chh * 0.15)
+    # paint sits on rough mill scale: break the coverage with fine noise and soften the edges
+    a = np.asarray(img, dtype=np.float32) / 255.0
+    n = rng.random((H // 4, W // 4)).astype(np.float32)
+    n = np.asarray(Image.fromarray((n * 255).astype(np.uint8)).resize((W, H), Image.BILINEAR), dtype=np.float32) / 255.0
+    a[..., 3] *= np.clip(0.55 + 0.75 * n, 0.0, 1.0)
+    img = Image.fromarray((a * 255).astype(np.uint8), "RGBA").filter(ImageFilter.GaussianBlur(0.7))
+    arr = np.asarray(img, dtype=np.float32) / 255.0
+    arr = arr[::-1]                      # bpy pixel rows run bottom-up
+    bi = bpy.data.images.get(name)
+    if bi is None:
+        bi = bpy.data.images.new(name, W, H, alpha=True)
+    bi.colorspace_settings.name = 'sRGB'
+    bi.alpha_mode = 'STRAIGHT'
+    bi.pixels.foreach_set(arr.ravel())
+    bi.pack()
+    return bi
+
+
+def _patch_object(name, pts, uvs, nu, nv, col, mat, outward):
+    """Quad grid mesh from an (nu+1)*(nv+1) point list with per-vertex UVs; outward(p) gives the surface normal side."""
+    faces = []
+    for i in range(nu):
+        for j in range(nv):
+            a = i * (nv + 1) + j
+            faces.append((a, a + 1, a + nv + 2, a + nv + 1))
+    ob = G.new_object(name, pts, faces, col, smooth=True)
+    me = ob.data
+    uvl = me.uv_layers.new(name="UVMap")
+    for poly in me.polygons:
+        for li in poly.loop_indices:
+            uvl.data[li].uv = uvs[me.loops[li].vertex_index]
+    me.materials.append(mat)
+    p0 = me.polygons[0]
+    if p0.normal.dot(outward(p0.center)) < 0:
+        me.flip_normals()
+    return ob
+
+
+def _markings(name, r_o, col, root):
+    r = r_o + 0.0005
+    yellow = (240, 205, 70)
+    white = (235, 235, 225)
+    # --- pipe leg: job number + FINAL, patch along X centred at ELBOW_R + 0.35, +Z side of the pipe
+    img_p = _marker_image(f"{name}_mark_pipe", [
+        ("JC-53  SPL-02", yellow, 128, 40, 150, 3.0),
+        ("FINAL", white, 160, 420, 345, -2.0),
+    ], size=(1280, 512), seed=7)
+    cx, cy, cz = L.SEAM_B_CENTER
+    xc = L.ELBOW_R + 0.35
+    wx, span = 0.26, math.radians(56)     # 260 mm x ~130 mm
+    nu, nv = 16, 12
+    pts, uvs = [], []
+    for i in range(nu + 1):
+        x = xc + wx / 2 - wx * i / nu              # u runs toward -X (reads left-to-right seen from the +Z side, top = -Y)
+        for j in range(nv + 1):
+            a = -span / 2 + span * j / nv
+            pts.append((x, cy + r * math.sin(a), cz + r * math.cos(a)))
+            uvs.append((i / nu, 1.0 - j / nv))
+    mark_p = _patch_object(f"{name}_mark_pipe", pts, uvs, nu, nv, col, materials.get("marker_decal", image=img_p.name),
+                           outward=lambda p: mathutils.Vector((0.0, p.y - cy, p.z - cz)))
+    G.set_parent(mark_p, root)
+    # --- elbow back (extrados around 45 deg): heat number + a small QC grid with a tick
+    img_e = _marker_image(f"{name}_mark_elbow", [
+        ("HT 4471", yellow, 108, 40, 118, 2.0),
+        ("DN250", white, 92, 640, 128, -3.0),
+        ("QC", white, 96, 660, 330, 4.0),
+    ], size=(1024, 512), seed=11, grids=[(110, 270, 300, 180, 3, 2, white, 9)])
+    R = L.ELBOW_R
+    th0, th1 = math.radians(30), math.radians(62)     # ~213 mm of arc length on the extrados
+    span_e = math.radians(50)
+    pts, uvs = [], []
+    for i in range(nu + 1):
+        th = th1 - (th1 - th0) * i / nu              # u runs from the pipe end toward the flange
+        ccx, ccz = R * (1 - math.cos(th)), R * math.sin(th)
+        nx, nz = -math.cos(th), math.sin(th)
+        for j in range(nv + 1):
+            a = -span_e / 2 + span_e * j / nv
+            pts.append((ccx + r * math.cos(a) * nx, r * math.sin(a), L.SEAM_A_Z + ccz + r * math.cos(a) * nz))
+            uvs.append((i / nu, 1.0 - j / nv))
+    def outward_e(p):
+        th = math.atan2(p.z - L.SEAM_A_Z, R - p.x)
+        return p - mathutils.Vector((R * (1 - math.cos(th)), 0.0, L.SEAM_A_Z + R * math.sin(th)))
+    mark_e = _patch_object(f"{name}_mark_elbow", pts, uvs, nu, nv, col, materials.get("marker_decal", image=img_e.name), outward=outward_e)
+    G.set_parent(mark_e, root)
+    return dict(pipe=mark_p, elbow=mark_e)
 
 
 def seam_circle_local(which):

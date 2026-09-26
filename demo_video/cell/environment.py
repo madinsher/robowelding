@@ -295,15 +295,34 @@ def _mat_wall():
     wz = _world_z(nt)
     seams = _line_mask(nt, wz.outputs["Z"], 1.0, 0.012)
     _tint_base_color(nt, bsdf, seams, (0.38, 0.40, 0.41))
-    # dirt gradient: full below 1.5 m above the plinth, fading out over the next 1.3 m, broken up by noise
-    grad = _math(nt, 'SUBTRACT', 1.0, _math(nt, 'DIVIDE', _math(nt, 'SUBTRACT', wz.outputs["Z"], 1.5), 1.3), clamp=True)
+    _dirt_gradient(nt, bsdf, wz, (0.22, 0.21, 0.20))
+    return m
+
+
+def _dirt_gradient(nt, bsdf, wz, color, z_full=1.5, z_clear=2.8, strength=0.85):
+    """Scuffs / dust on the lower wall: full below z_full (world), fading out by z_clear, broken up by noise."""
+    grad = _math(nt, 'SUBTRACT', 1.0, _math(nt, 'DIVIDE', _math(nt, 'SUBTRACT', wz.outputs["Z"], z_full), z_clear - z_full), clamp=True)
     noise = nt.nodes.new("ShaderNodeTexNoise")
     noise.inputs["Scale"].default_value = 0.6
     noise.inputs["Detail"].default_value = 5.0
-    tc = nt.nodes.new("ShaderNodeTexCoord")
-    nt.links.new(tc.outputs["Object"], noise.inputs["Vector"])
-    dirt = _math(nt, 'MULTIPLY', grad, _math(nt, 'ADD', 0.35, _math(nt, 'MULTIPLY', noise.outputs["Fac"], 0.5)), clamp=True)
-    _tint_base_color(nt, bsdf, dirt, (0.22, 0.21, 0.20))
+    geo = nt.nodes.new("ShaderNodeNewGeometry")
+    nt.links.new(geo.outputs["Position"], noise.inputs["Vector"])
+    dirt = _math(nt, 'MULTIPLY', grad, _math(nt, 'MULTIPLY', _math(nt, 'ADD', 0.4, _math(nt, 'MULTIPLY', noise.outputs["Fac"], 0.6)), strength), clamp=True)
+    _tint_base_color(nt, bsdf, dirt, color)
+
+
+def _mat_plinth():
+    """Concrete plinth / dado ring at the foot of the walls: darker than the shared concrete, dirt gradient."""
+    key = "env_plinth"
+    m = bpy.data.materials.get(key)
+    if m:
+        return m
+    m = materials.get("concrete").copy()
+    m.name = key
+    nt, bsdf = _nodes(m)
+    _scale_base_color(nt, bsdf, (0.19, 0.185, 0.175), 0.36)
+    bsdf.inputs["Roughness"].default_value = 0.8
+    _dirt_gradient(nt, bsdf, _world_z(nt), (0.10, 0.095, 0.09), z_full=0.3, z_clear=1.3, strength=0.7)
     return m
 
 
@@ -339,7 +358,7 @@ def _mat_screen():
 
 def _mats():
     return dict(
-        floor=_mat_floor(), wall=_mat_wall(), hazard=_mat_hazard(), screen=_mat_screen(),
+        floor=_mat_floor(), wall=_mat_wall(), plinth=_mat_plinth(), hazard=_mat_hazard(), screen=_mat_screen(),
         concrete=materials.get("concrete"),
         red_steel=materials.get("painted", color="#8A1C1C", roughness=0.45),
         roof=materials.get("painted", color="#4A4E52", roughness=0.6),
@@ -348,7 +367,7 @@ def _mats():
         dark=materials.get("dark_metal"), black=materials.get("black_plastic"), rubber=materials.get("rubber"),
         galv=materials.get("galvanized"), steel=materials.get("machined_steel"), pipe=materials.get("steel_pipe"),
         brass=materials.get("brass"),
-        cable=materials.get("cable_black"), glass=materials.get("glass_dark"), fence=materials.get("fence_mesh", color="#2A2A2A", pitch=0.06, wire=0.003),   # dark mesh, yellow frames (X-Guard style)
+        cable=materials.get("cable_black"), glass=materials.get("glass_dark"), fence=materials.get("fence_mesh", color="#2A2A2A", pitch=0.08, wire=0.005),   # dark mesh, yellow frames; coarse enough not to moire at 8 TAA samples
         wood=materials.get("painted", color="#8A6A42", roughness=0.8, coat=0.0),
         cabinet=materials.get("painted", color="#B9BCBE", roughness=0.5),
         cabinet_dark=materials.get("painted", color="#5A5D60", roughness=0.5),
@@ -394,7 +413,7 @@ def _hall(b, M):
                           ("env_plinth_s", (HALL_X, 0.25, plinth), (0, -HY + 0.125, plinth / 2)),
                           ("env_plinth_e", (0.25, HALL_Y, plinth), (HX - 0.125, 0, plinth / 2)),
                           ("env_plinth_w", (0.25, HALL_Y, plinth), (-HX + 0.125, 0, plinth / 2))):
-        _box(b, name, size, c, M["concrete"])
+        _box(b, name, size, c, M["plinth"])
         fl = (size[0] + 0.02, 0.28, 0.03) if size[0] > size[1] else (0.28, size[1] + 0.02, 0.03)
         _box(b, name + "_cap", fl, (c[0], c[1], plinth + 0.015), M["roof_steel"])
 

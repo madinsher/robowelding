@@ -5,10 +5,10 @@ captions, end card, corner label) + synthesized soundtrack.
     python3 post/compose.py --frames out/frames --out out/demo_final.mp4 [--storyboard post/storyboard.json]
                             [--no-audio] [--preview] [--keep-temp]
 
-Input frames: ``frame_%04d.png`` numbered in storyboard frame space (1..1008 at 24 fps).  The
-sequence may be sparse (e.g. every 8th frame from a preview render) or an excerpt (e.g. frames
-930..1008): timing is derived from the frame numbers, so overlays and audio always line up with
-the storyboard.  Output: 1920x1080 H.264 (libx264, yuv420p, crf 18, faststart) + AAC, 24 fps.
+Input frames: ``frame_%04d.png`` numbered in storyboard frame space (1..``frames`` of the
+storyboard, 1104 at 24 fps).  The sequence may be sparse (e.g. every 8th frame from a preview
+render) or an excerpt (e.g. frames 930..1104): timing is derived from the frame numbers, so
+overlays and audio always line up with the storyboard.  Output: 1920x1080 H.264 (libx264, yuv420p, crf 18, faststart) + AAC, 24 fps.
 
 Pipeline (ffmpeg only, overlays are pre-rendered RGBA PNGs from ``overlays.py``):
     main = scale(1920x1080) -> fps=24

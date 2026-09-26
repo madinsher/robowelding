@@ -63,8 +63,7 @@ def _draw_spaced(draw: ImageDraw.ImageDraw, xy: Tuple[float, float], text: str,
         x += font.getlength(ch) + spacing
 
 
-def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: float) -> List[str]:
-    """Greedy word wrap on spaces; never breaks inside a word."""
+def _wrap_greedy(text: str, font: ImageFont.FreeTypeFont, max_width: float) -> List[str]:
     words = text.split()
     lines: List[str] = []
     cur = ""
@@ -78,6 +77,26 @@ def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: float) -> List
     if cur:
         lines.append(cur)
     return lines
+
+
+def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: float, balance: bool = True) -> List[str]:
+    """Word wrap on spaces (never breaks inside a word).  With ``balance`` the line count of the
+    greedy wrap is kept but the width is narrowed until the lines are as even as possible, so a
+    multi-line caption does not end in a one- or two-word orphan."""
+    lines = _wrap_greedy(text, font, max_width)
+    if not balance or len(lines) < 2:
+        return lines
+    n = len(lines)
+    lo, hi = max(font.getlength(l) for l in lines) * 0.5, max_width
+    best = lines
+    for _ in range(18):                       # bisection on the width: smallest width giving n lines
+        mid = (lo + hi) / 2
+        trial = _wrap_greedy(text, font, mid)
+        if len(trial) <= n:
+            best, hi = trial, mid
+        else:
+            lo = mid
+    return best
 
 
 def _style(storyboard: dict) -> dict:
@@ -181,18 +200,23 @@ def render_caption(sb: dict, cap: dict, idx: int, out_dir: Path) -> Overlay:
 
 
 def render_end_card(sb: dict, out_dir: Path) -> Overlay:
-    """End card: full-frame dark veil, centred heading + bullet lines, small footer."""
+    """End card: full-frame dark veil, centred heading + bullet lines, an optional call-to-action
+    line (``end_card.cta``, orange chip style) and the small footer."""
     st = _style(sb)
     e = sb["end_card"]
     img = Image.new("RGBA", (W, H), (0, 0, 0, st["endcard_dim"]))
     d = ImageDraw.Draw(img)
     f_head = _font(sb["font_bold"], 64)
     f_line = _font(sb["font"], 36)
+    f_cta = _font(sb["font_bold"], 24)
     f_foot = _font(sb["font"], 24)
+    cta = (e.get("cta") or "").strip()
+    cta_spacing = 1.5
+    cta_h = (_ascent(f_cta) + 2 * 12 + 4) if cta else 0
 
     lines: List[List[str]] = [wrap_text(l, f_line, 1500) for l in e["lines"]]
     n_lines = sum(len(l) for l in lines)
-    block_h = 64 + 40 + 56 * n_lines + 14 * (len(lines) - 1)
+    block_h = 64 + 40 + 56 * n_lines + 14 * (len(lines) - 1) + (34 + cta_h if cta else 0)
     y = (H - block_h) // 2 - 30
 
     d.text((W / 2, y + _ascent(f_head)), e["heading"], font=f_head, fill=st["text"], anchor="ms")
@@ -210,6 +234,17 @@ def render_end_card(sb: dict, out_dir: Path) -> Overlay:
             d.text((x0, y + _ascent(f_line)), line, font=f_line, fill=st["text"], anchor="ls")
             y += 56
         y += 14
+
+    if cta:
+        # call-to-action: centred orange chip with dark text, separated from the bullets by a gap
+        y += 34
+        pad_x, pad_y = 22, 12
+        tw = int(_text_width(f_cta, cta, cta_spacing))
+        cw = tw + 2 * pad_x
+        cx0 = (W - cw) // 2
+        d.rounded_rectangle([cx0, y, cx0 + cw, y + cta_h], radius=10, fill=st["accent"])
+        _draw_spaced(d, (cx0 + pad_x, y + pad_y + _ascent(f_cta)), cta, f_cta, st["chip_text"], cta_spacing)
+        y += cta_h
 
     footer = sb.get("footer", "Демонстрационная 3D-симуляция · моделирование на основе фото участка")
     d.text((W / 2, H - st["margin_y"]), footer, font=f_foot, fill=st["text_dim"], anchor="ms")

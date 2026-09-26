@@ -1,13 +1,17 @@
 """Synthesized soundtrack for the demo (numpy only, no samples).
 
-Layers, all timed from the storyboard captions (frame numbers -> seconds at storyboard fps):
+Layers, timed in storyboard frames (frame numbers -> seconds at storyboard fps):
   * workshop ambience  — filtered brown+pink noise, -32 dBFS RMS, slightly decorrelated L/R;
   * servo whine        — soft swept sawtooth (200-400 Hz, few harmonics) during robot/positioner
-                         moves (captions whose TAG is in ``servo_tags``), ±0.25 s;
+                         moves: ``audio.servo_intervals`` (frame pairs, exact motion spans) when
+                         present, otherwise the captions whose TAG is in ``servo_tags`` ±0.25 s;
   * MIG arc crackle    — white-noise bursts at a random 30-120 Hz burst rate, band-passed 1-6 kHz,
-                         plus a 50/100 Hz hum, 0.3 s fades at the interval edges and a click at
-                         arc start (captions whose TAG starts with ``weld_prefix``).
-The result is written as a 48 kHz stereo 16-bit WAV normalised to -3 dBFS peak.
+                         plus a 50/100 Hz hum, 0.3 s fades at the interval edges and a hard
+                         ignition click at every arc start: ``audio.weld_intervals`` (frame pairs =
+                         the real arc-on intervals of the animation) when present, otherwise the
+                         captions whose TAG starts with ``weld_prefix``.
+Everything is deterministic (``audio.seed``).  The result is written as a 48 kHz stereo 16-bit
+WAV normalised to -3 dBFS peak.
 
 CLI:  python3 post/audio.py --storyboard post/storyboard.json --out out/soundtrack.wav
 """
@@ -25,7 +29,10 @@ Interval = Tuple[float, float]           # (start_s, end_s)
 
 # Defaults; storyboard["audio"] may override any of them.
 AUDIO_DEFAULTS = {
-    "servo_tags": ["ПОДГОТОВКА", "ПЕРЕНАЛАДКА", "ИНДЕКСАЦИЯ 180°", "ЗАВЕРШЕНИЕ"],
+    "weld_intervals": None,       # [[first_frame, last_frame], ...] arc-on spans; None -> from caption tags
+    "servo_intervals": None,      # [[first_frame, last_frame], ...] move spans;   None -> from caption tags
+    "servo_tags": ["ПОДГОТОВКА", "АДАПТАЦИЯ", "ПЕРЕМЕЩЕНИЕ ПО ТРЕКУ", "ПЕРЕНАЛАДКА",
+                   "ИНДЕКСАЦИЯ 180°", "ЗАВЕРШЕНИЕ"],
     "servo_pad_s": 0.25,
     "weld_prefix": "ШОВ",
     "ambience_db": -32.0,
@@ -214,20 +221,55 @@ def weld(n: int, intervals: Sequence[Interval], rng: np.random.Generator,
     out = crackle * (db(level_db) / rms_in(crackle, intervals))
     out = soft_clip(out, db(level_db + 10))
     out += hum * (db(hum_db) / rms_in(hum, intervals))
-    # hard-onset ignition click (not affected by the 0.3 s fade-in)
+    # hard-onset ignition click at every arc start (not affected by the 0.3 s fade-in): a 4 ms
+    # broadband pop followed by a short damped 1.8 kHz "ping" of the contact tip.
     for a, _ in intervals:
         i0 = int(max(0, a) * SR)
         length = int(0.004 * SR)
         if i0 + length < n:
             click = rng.standard_normal(length) * np.exp(-np.linspace(0, 5, length))
             out[i0:i0 + length] += click / (np.abs(click).max() + 1e-12) * db(level_db + 8)
+        ring = int(0.04 * SR)
+        if i0 + ring < n:
+            tr = np.arange(ring) / SR
+            out[i0:i0 + ring] += np.sin(2 * np.pi * 1800 * tr) * np.exp(-tr * 120) * db(level_db + 2)
     return out
 
 
 # ----------------------------------------------------------------------------- storyboard -> intervals
+def frames_to_seconds(pairs: Sequence[Sequence[float]], fps: float) -> List[Interval]:
+    """[[first_frame, last_frame], ...] (1-based, inclusive) -> [(start_s, end_s), ...]."""
+    out = []
+    for a, b in pairs:
+        if b >= a:
+            out.append(((float(a) - 1) / fps, float(b) / fps))
+    return out
+
+
 def caption_intervals(sb: dict, fps: float, pred) -> List[Interval]:
     """Seconds intervals of the captions whose ``tag`` satisfies ``pred``."""
-    return [((c["start"] - 1) / fps, c["end"] / fps) for c in sb.get("captions", []) if pred(c.get("tag", ""))]
+    return frames_to_seconds([(c["start"], c["end"]) for c in sb.get("captions", []) if pred(c.get("tag", ""))],
+                             fps)
+
+
+def plan_intervals(sb: dict) -> Tuple[List[Interval], List[Interval]]:
+    """(servo_intervals, weld_intervals) in seconds for the storyboard: explicit frame pairs from
+    ``audio.servo_intervals`` / ``audio.weld_intervals`` when present, otherwise derived from the
+    caption tags (servo ones padded by ``servo_pad_s`` because captions trail the motion)."""
+    cfg = dict(AUDIO_DEFAULTS)
+    cfg.update(sb.get("audio") or {})
+    fps = float(sb.get("fps", 24))
+    if cfg.get("servo_intervals"):
+        servo_iv = frames_to_seconds(cfg["servo_intervals"], fps)
+    else:
+        pad = cfg["servo_pad_s"]
+        tags = [s.upper() for s in cfg["servo_tags"]]
+        servo_iv = [(a - pad, b + pad) for a, b in caption_intervals(sb, fps, lambda tag: tag.upper() in tags)]
+    if cfg.get("weld_intervals"):
+        weld_iv = frames_to_seconds(cfg["weld_intervals"], fps)
+    else:
+        weld_iv = caption_intervals(sb, fps, lambda tag: tag.upper().startswith(cfg["weld_prefix"].upper()))
+    return servo_iv, weld_iv
 
 
 def synthesize(sb: dict, duration_s: float = None) -> np.ndarray:
@@ -240,10 +282,7 @@ def synthesize(sb: dict, duration_s: float = None) -> np.ndarray:
     n = int(round(duration_s * SR))
     rng = np.random.default_rng(cfg["seed"])
 
-    pad = cfg["servo_pad_s"]
-    servo_iv = [(a - pad, b + pad) for a, b in
-                caption_intervals(sb, fps, lambda tag: tag.upper() in [s.upper() for s in cfg["servo_tags"]])]
-    weld_iv = caption_intervals(sb, fps, lambda tag: tag.upper().startswith(cfg["weld_prefix"].upper()))
+    servo_iv, weld_iv = plan_intervals(sb)
 
     mix = ambience(n, rng, cfg["ambience_db"])
     s = servo(n, servo_iv, rng, cfg["servo_db"])

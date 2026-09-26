@@ -1,126 +1,255 @@
-"""Stand-in scene for cell.vfx: a steel cylinder, an arc empty orbiting its top, EEVEE stills.
+"""VFX test in the real cell: positioner (tilt +90) + spool + IK-posed robot + hall lighting, no animation module.
 
-    xvfb-run -a python3 tests/t_vfx.py            # stills f5/40/80/115 at 1280x720 + 1080p timing + preview mp4
-    xvfb-run -a python3 tests/t_vfx.py stills     # only the stills
-    xvfb-run -a python3 tests/t_vfx.py preview    # only the 24-frame preview (frames 30-53, 640x360)
-    xvfb-run -a python3 tests/t_vfx.py timing     # only one 1920x1080 frame, timed
+Timeline (120 frames): laser seam search 1..40 (TCP 35 mm above seam A, sweep +/-60 mm along X), move down,
+arc on 50..110 while the part rotates 100 deg, lift, arc off 111..120 (smoke fades, everything must be off).
+
+    xvfb-run -a python3 tests/t_vfx.py                       # all shots at 960x540, 8 samples
+    xvfb-run -a python3 tests/t_vfx.py --shots close mid     # subset: close close2 mid laser laser_wide index off timing
+    xvfb-run -a python3 tests/t_vfx.py --shots close2 --hide smoke --tag _nosmoke   # attribute an effect
+    xvfb-run -a python3 tests/t_vfx.py --shots close2 --set ARC_LIGHT_POWER=100 --tag _p100   # try a tunable
+    xvfb-run -a python3 tests/t_vfx.py --res 1920 1080 --shots timing   # 1080p cost with / without the plume
+    xvfb-run -a python3 tests/t_vfx.py --no-env               # faster: fallback lighting instead of the hall
 """
+import argparse
 import math
 import os
-import subprocess
 import sys
 import time
 
+import numpy as np
 import bpy
 from mathutils import Vector
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from cell import materials, vfx, layout as L, geom as G
+from cell import layout as L, geom as G, materials, spool, positioner, robot_build as RB, environment, vfx  # noqa: E402
 
 OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out")
-CYL_R, CYL_Z = 0.137, 1.0
-ORBIT_R = 0.14
+DEG = math.pi / 180
+ap = argparse.ArgumentParser()
+ap.add_argument("--res", nargs=2, type=int, default=(960, 540))
+ap.add_argument("--samples", type=int, default=8)
+ap.add_argument("--shots", nargs="*", default=["close", "close2", "mid", "laser", "laser_wide", "index", "off"])
+ap.add_argument("--no-env", action="store_true")
+ap.add_argument("--hide", nargs="*", default=[], help="vfx objects to hide for the render: smoke glow core light spark_emitter")
+ap.add_argument("--tag", default="", help="suffix for the output file names")
+ap.add_argument("--set", nargs="*", default=[], help="override vfx tunables, e.g. ARC_LIGHT_POWER=120 SMOKE_DENSITY=80")
+args = ap.parse_args()
+import ast  # noqa: E402
+for kv in args.set:
+    k, v = kv.split("=", 1)
+    assert hasattr(vfx, k), k
+    setattr(vfx, k, ast.literal_eval(v))
 
+LASER = (1, 40)
+ARC = (50, 110)
+N = 120
+
+# ------------------------------------------------------------------ scene
 bpy.ops.wm.read_factory_settings(use_empty=True)
 sc = bpy.context.scene
-sc.frame_start, sc.frame_end = 1, 120
 sc.render.fps = L.FPS
+sc.frame_start, sc.frame_end = 1, N
+t0 = time.time()
+pos = positioner.build()
+sp = spool.build()
+G.set_parent(sp["root"], pos["mount"], keep_world=False)
+rob = RB.build()
+print(f"machines built in {time.time() - t0:.1f}s")
 
-# ---- stand-in geometry
-cyl = G.cylinder("Pipe", CYL_R, 1.6, location=(0, 0, CYL_Z), rotation=(math.pi / 2, 0, 0), vertices=128)
-cyl.data.materials.append(materials.get("steel_pipe"))
-bpy.ops.mesh.primitive_plane_add(size=12)
-floor = bpy.context.object
-floor.data.materials.append(materials.get("concrete"))
-bpy.ops.mesh.primitive_plane_add(size=12, location=(-3, 0, 3), rotation=(0, math.pi / 2, 0))
-wall = bpy.context.object
-wall.data.materials.append(materials.get("wall_panel"))
-bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 0.4))
-stand = bpy.context.object
-stand.scale = (0.3, 1.2, 0.8)
-stand.data.materials.append(materials.get("painted", color="#3A5A8C"))
+# positioner: tilt +90 (faceplate faces +Y); rotate 100 deg during the arc
+positioner.set_tilt(pos, 90.0, frame=1)
+positioner.set_rot(pos, 70.0, frame=ARC[0] - 2)
+positioner.set_rot(pos, 170.0, frame=ARC[1] + 2)
+for fc in pos["rot"].animation_data.action.fcurves:
+    for kp in fc.keyframe_points:
+        kp.interpolation = 'LINEAR'
 
-# ---- lighting
-bpy.ops.object.light_add(type='AREA', location=(1.5, -2.5, 3.2))
-key = bpy.context.object
-key.data.energy = 250
-key.data.size = 2.5
-key.rotation_euler = (Vector((1.5, -2.5, 3.2)) - Vector((0, 0, 1))).to_track_quat('Z', 'Y').to_euler()
-bpy.ops.object.light_add(type='SUN', rotation=(0.9, 0.3, 0.8))
-bpy.context.object.data.energy = 1.2
-w = bpy.data.worlds.new("W"); sc.world = w; w.use_nodes = True
-w.node_tree.nodes["Background"].inputs[0].default_value = (0.12, 0.13, 0.15, 1)
-w.node_tree.nodes["Background"].inputs[1].default_value = 0.4
-
-# ---- arc empty: orbit the cylinder top from 60 deg to 120 deg over frames 1..120, +Z toward the axis
-arc = G.empty("ArcTip", size=0.05)
-arc.rotation_mode = 'QUATERNION'
-arc["arc_on"] = 0.0
-for f in range(1, 121):
-    a = math.radians(60 + 60 * (f - 1) / 119)
-    p = Vector((ORBIT_R * math.cos(a), 0.0, CYL_Z + ORBIT_R * math.sin(a)))
-    d = (Vector((0, 0, CYL_Z)) - p).normalized()
-    arc.location = p
-    arc.rotation_quaternion = d.to_track_quat('Z', 'Y')
-    arc.keyframe_insert("location", frame=f)
-    arc.keyframe_insert("rotation_quaternion", frame=f)
-    arc["arc_on"] = 1.0 if 10 <= f <= 110 else 0.0
-    arc.keyframe_insert('["arc_on"]', frame=f)
-for fc in arc.animation_data.action.fcurves:
-    if fc.data_path.startswith('["'):
-        for kp in fc.keyframe_points:
-            kp.interpolation = 'CONSTANT'
-
-# ---- VFX under test (plus the seam-search laser on frames 1..8, before the arc starts)
-fx = vfx.build(arc, [(10, 110)])
-vfx.setup_compositor(sc)
-sensor = G.empty("Sensor", size=0.05)
-sensor.location = (0.03, 0.22, CYL_Z + CYL_R + 0.06)
-sensor.rotation_euler = (math.pi, 0, math.radians(90))     # +Z points straight down onto the pipe
-laser = vfx.laser_line(sensor, [(1, 8)])
-
-# ---- camera at (0.9,-0.8,1.35) looking at the empty's midway position (angle 90 deg = top of the pipe)
-mid = Vector((0.0, 0.0, CYL_Z + ORBIT_R))
-bpy.ops.object.camera_add(location=(0.9, -0.8, 1.35))
-cam = bpy.context.object
-cam.data.lens = 50
-cam.rotation_euler = (cam.location - mid).to_track_quat('Z', 'Y').to_euler()
-sc.camera = cam
-
-sc.render.engine = 'BLENDER_EEVEE_NEXT'
-sc.eevee.taa_render_samples = 16
-sc.render.image_settings.file_format = 'PNG'
+# ------------------------------------------------------------------ robot: IK on seam A top point
 bpy.context.view_layer.update()
+TOP = np.array([0.0, L.POS_FACEPLATE_OFFSET + L.POS_FIXTURE_THICK + L.SEAM_A_Z, L.POS_TILT_AXIS_Z + L.SEAM_RADIUS])
+print("seam A top point", TOP.round(3))
+arm, TOOL = rob["arm"], RB.tool_transform()
+QREF = np.array([0, 0, 0, 0, 1.2, 0])
+TRACK_Y = 0.0
+
+
+def target(p, n, t, lean, push=10.0):
+    n = n / np.linalg.norm(n); t = t / np.linalg.norm(t)
+    z = -n * math.cos(push * DEG) + t * math.sin(push * DEG)
+    x = lean - np.dot(lean, z) * z; x /= np.linalg.norm(x); y = np.cross(z, x)
+    T = np.eye(4); T[:3, 0] = x; T[:3, 1] = y; T[:3, 2] = z; T[:3, 3] = p
+    return T
+
+
+def lean(p):
+    d = np.array([L.TRACK_X - p[0], TRACK_Y - p[1], 0.0]); d /= np.linalg.norm(d)
+    return d + np.array([0, 0, 0.9])
+
+
+n_up, t_x = np.array([0, 0, 1.0]), np.array([1.0, 0, 0])
+targets = {}
+for f in range(1, N + 1):
+    if f <= LASER[1]:
+        s = (f - LASER[0]) / (LASER[1] - LASER[0])
+        x = -0.06 + 0.12 * (0.5 - 0.5 * math.cos(math.pi * s))
+        p = TOP + np.array([x, 0, 0.035])
+    elif f < ARC[0] - 2:
+        s = (f - LASER[1]) / (ARC[0] - 2 - LASER[1])
+        p = TOP + np.array([0.06 * (1 - s), 0, 0.035 * (1 - s)])
+    elif f <= ARC[1] + 2:
+        w = 0.0025 * math.sin(2 * math.pi * 2.5 * (f - ARC[0]) / L.FPS)
+        p = TOP + np.array([w, 0, 0])
+    else:
+        s = (f - ARC[1] - 2) / (N - ARC[1] - 2)
+        p = TOP + np.array([0, 0, 0.15 * s])
+    targets[f] = target(p, n_up, t_x, lean(p))
+base = RB.base_matrix(TRACK_Y)
+q = np.array(L.ROBOT_Q_HOME)
+fails = 0
+for f in range(1, N + 1):
+    q, ok, err = arm.ik(targets[f], q, base, TOOL, free_spin=True, q_ref=QREF, iters=200)
+    fails += (not ok)
+    RB.set_q(rob, q, frame=f)
+RB.set_track(rob, TRACK_Y, frame=1)
+print(f"IK: {fails} failures")
+arc = G.empty("arc_point", collection=rob["collection"], size=0.03)
+arc.parent = rob["tcp"]
+import mathutils  # noqa: E402
+arc.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+
+# weld bead A progress (same convention as animation.py: u = angle/2pi in the bead frame)
+bpy.context.view_layer.update()
+bead = sp["beads"]["A"]
+us = []
+for f in range(ARC[0], ARC[1] + 1):
+    sc.frame_set(f)
+    pl = bead.matrix_world.inverted() @ Vector(TOP)
+    us.append((math.atan2(pl.y, pl.x) / (2 * math.pi)) % 1.0)
+d = us[1] - us[0]; d -= round(d)
+bead["w0_start"] = us[0]; bead["w0_dir"] = 1.0 if d > 0 else -1.0
+bead.keyframe_insert('["w0_start"]', frame=1); bead.keyframe_insert('["w0_dir"]', frame=1)
+bead["w0_prog"] = 0.0; bead.keyframe_insert('["w0_prog"]', frame=ARC[0] - 1)
+for k, f in enumerate(range(ARC[0], ARC[1] + 1)):
+    du = (us[k] - us[0]) * bead["w0_dir"]; du -= math.floor(du)
+    bead["w0_prog"] = float(du + 0.004); bead.keyframe_insert('["w0_prog"]', frame=f)
+bead["w0_hot"] = 0.0; bead.keyframe_insert('["w0_hot"]', frame=ARC[0] - 1)
+bead["w0_hot"] = 1.0; bead.keyframe_insert('["w0_hot"]', frame=ARC[0]); bead.keyframe_insert('["w0_hot"]', frame=ARC[1])
+bead["w0_hot"] = 0.0; bead.keyframe_insert('["w0_hot"]', frame=ARC[1] + 40)
+
+# ------------------------------------------------------------------ environment + lighting
+t0 = time.time()
+if not args.no_env:
+    environment.build()
+    environment.build_lighting(sc)
+else:
+    bpy.ops.mesh.primitive_plane_add(size=40)
+    bpy.context.object.data.materials.append(materials.get("concrete"))
+    bpy.ops.object.light_add(type='AREA', location=(0.8, 0, 6.2)); k = bpy.context.object
+    k.name = "env_light_key"; k.data.name = "env_light_key"; k.data.energy = 550; k.data.size = 3.5
+    w = bpy.data.worlds.new("W"); sc.world = w; w.use_nodes = True
+    w.node_tree.nodes["Background"].inputs[0].default_value = (0.34, 0.38, 0.44, 1)
+    w.node_tree.nodes["Background"].inputs[1].default_value = 0.12
+print(f"environment built in {time.time() - t0:.1f}s")
+
+# ------------------------------------------------------------------ VFX under test
+t0 = time.time()
+fx = vfx.build(arc, [ARC])
+line = vfx.laser_line(rob["torch"]["sensor"], [LASER])
+vfx.setup_compositor(sc)
+print(f"vfx built in {time.time() - t0:.1f}s")
+
+# ------------------------------------------------------------------ render settings (as build.setup_render for EEVEE)
+sc.render.engine = 'BLENDER_EEVEE_NEXT'
+sc.render.resolution_x, sc.render.resolution_y = args.res
+sc.render.resolution_percentage = 100
+sc.render.image_settings.file_format = 'PNG'
+sc.render.image_settings.color_mode = 'RGB'
+sc.view_settings.view_transform = 'AgX'
+sc.view_settings.look = 'AgX - Medium High Contrast'
+sc.eevee.taa_render_samples = args.samples
+sc.eevee.use_shadows = True
+sc.eevee.use_raytracing = False
+sc.eevee.use_fast_gi = False
+sc.eevee.shadow_ray_count = 2
+sc.eevee.shadow_step_count = 4
+sc.eevee.shadow_resolution_scale = 0.25
+sc.eevee.use_volumetric_shadows = False
+for ob in bpy.data.objects:
+    if ob.type == 'LIGHT':
+        if ob.name in ("env_light_key", "ArcLight"):
+            ob.data.use_shadow = True
+            ob.data.shadow_maximum_resolution = 0.008 if ob.name == "ArcLight" else max(ob.data.shadow_maximum_resolution, 0.015)
+        else:
+            ob.data.use_shadow = False
+bpy.context.view_layer.update()
+t0 = time.time()
 vfx.bake_particles(sc)
+print(f"particles baked in {time.time() - t0:.1f}s")
+
+# ------------------------------------------------------------------ off-state check (finding 5)
+for f in (5, 45, 111, 118):
+    sc.frame_set(f)
+    dg = bpy.context.evaluated_depsgraph_get()
+    core, glow, light, smoke = (fx[k].evaluated_get(dg) for k in ("core", "glow", "light", "smoke"))
+    print(f"frame {f:3d}: core scale {tuple(round(v, 4) for v in core.scale)} glow scale {tuple(round(v, 4) for v in glow.scale)} "
+          f"arc light {light.data.energy:.1f} W smoke {smoke['smoke']:.2f} laser scale {tuple(round(v, 2) for v in line.evaluated_get(dg).scale)} "
+          f"laser spot {bpy.data.objects['LaserSpot'].evaluated_get(dg).data.energy:.0f} W")
+
+# ------------------------------------------------------------------ cameras
+CAMS = {}
 
 
-def render(frame, res, path, samples=16):
+def cam(name, loc, tgt, lens):
+    cd = bpy.data.cameras.new(name); cd.lens = lens; cd.sensor_width = 36; cd.clip_start = 0.02; cd.clip_end = 200
+    ob = bpy.data.objects.new("cam_" + name, cd); sc.collection.objects.link(ob)
+    ob.location = loc
+    ob.rotation_euler = (Vector(loc) - Vector(tgt)).to_track_quat('Z', 'Y').to_euler()
+    CAMS[name] = ob
+    return ob
+
+
+A = Vector(TOP)
+# the seam hides behind the flange (r 0.2) from -Y and behind the rotary drive motor from +X/-Y: look from -X, high
+cam("close", A + Vector((-0.40, -0.36, 0.41)), A + Vector((0.0, 0.0, 0.01)), 60)
+cam("close2", A + Vector((0.55, -0.15, 0.42)), A + Vector((0.0, 0.0, 0.01)), 50)
+cam("mid", A + Vector((-1.7, -0.3, 0.55)), A + Vector((0.0, 0.0, 0.22)), 35)     # from -X: the faceplate (r 0.32) hides the seam from -Y
+cam("laser_wide", A + Vector((-0.9, -0.9, 0.7)), A + Vector((0.0, 0.0, 0.03)), 50)
+cam("index", (1.9, -3.6, 2.3), (0.3, 0.0, 1.0), 32)
+
+SHOTS = dict(close=("close", 80), close2=("close2", 75), mid=("mid", 90), laser=("close", 20), laser_start=("close", 3), laser_end=("close", 38), laser_wide=("laser_wide", 30),
+             index=("index", 118), off=("mid", 116))
+
+# laser projection sanity: centre sample of the first key (sensor frame; +Z into the part) and the z spread across the line
+kb = line.data.shape_keys.key_blocks[1]
+zs = [kb.data[i].co.z for i in range(len(kb.data))]
+print(f"laser line ({kb.name}): centre {tuple(round(v, 4) for v in kb.data[len(kb.data) // 2].co)}  z range {min(zs):.4f}..{max(zs):.4f}")
+
+
+def render(cam_name, frame, path):
+    sc.camera = CAMS[cam_name]
     sc.frame_set(frame)
-    sc.render.resolution_x, sc.render.resolution_y = res
-    sc.render.resolution_percentage = 100
-    sc.eevee.taa_render_samples = samples
     sc.render.filepath = path
     t = time.time()
     bpy.ops.render.render(write_still=True)
-    return time.time() - t
+    dt = time.time() - t
+    print(f"rendered {path} (frame {frame}) in {dt:.1f}s", flush=True)
+    return dt
 
 
-what = sys.argv[1] if len(sys.argv) > 1 else "all"
-if what in ("all", "stills"):
-    for f in (5, 40, 80, 115):
-        dt = render(f, (1280, 720), os.path.join(OUT, f"vfx_f{f:03d}.png"))
-        print(f"still frame {f}: {dt:.1f} s")
-if what in ("all", "timing"):
-    dt = render(60, (1920, 1080), os.path.join(OUT, "vfx_1080p_f060.png"))
-    print(f"1920x1080 frame 60 (16 samples): {dt:.1f} s")
-if what in ("all", "preview"):
-    pdir = os.path.join(OUT, "vfx_preview_frames")
-    os.makedirs(pdir, exist_ok=True)
-    t0 = time.time()
-    for f in range(30, 54):
-        render(f, (640, 360), os.path.join(pdir, f"p{f:03d}.png"), samples=8)
-    print(f"preview 24 frames: {time.time() - t0:.1f} s")
-    subprocess.run(["/usr/bin/ffmpeg", "-y", "-loglevel", "error", "-framerate", str(L.FPS), "-start_number", "30",
-                    "-i", os.path.join(pdir, "p%03d.png"), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
-                    os.path.join(OUT, "vfx_preview.mp4")], check=True)
-    print("wrote", os.path.join(OUT, "vfx_preview.mp4"))
+for k in args.hide:
+    fx[k].hide_render = True
+for shot in args.shots:
+    if shot == "timing":
+        dt1 = render("mid", 90, os.path.join(OUT, "vfx_timing_plume.png"))
+        fx["smoke"].hide_render = True
+        dt2 = render("mid", 90, os.path.join(OUT, "vfx_timing_noplume.png"))
+        fx["smoke"].hide_render = False
+        print(f"plume cost at {args.res[0]}x{args.res[1]}: {dt1 - dt2:+.1f}s per frame")
+        continue
+    if shot == "index":
+        # the finding-5 check: same view with the VFX collection excluded, then included
+        fx["collection"].hide_render = True
+        render("index", 118, os.path.join(OUT, "vfx_index_novfx.png"))
+        fx["collection"].hide_render = False
+    c, f = SHOTS[shot]
+    render(c, f, os.path.join(OUT, f"vfx_{shot}{args.tag}.png"))

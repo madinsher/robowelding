@@ -16,6 +16,9 @@ from .robot_urdf import URDFArm
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 URDF = os.path.join(HERE, "assets", "abb_irb4600_40_255", "urdf", "robot_description.urdf")
 MESH_ROOT = os.path.join(HERE, "assets", "abb_irb4600_40_255")
+HOSE_WAVE_SCALE = 35.0      # wave-texture scale on the arc length in metres: band pitch = 0.314 / scale ~ 9 mm
+HOSE_RADIUS = 0.016
+_FOREARM_TOP = {0.35: 0.055, 0.75: 0.073}   # forearm (link_4) top surface z at y = 0 for the two hose clamps, from the STL
 
 
 def tool_transform():
@@ -122,6 +125,11 @@ def build(collection=None):
             lo.matrix_basis = G.M(info["vis_origin"])
             link_objs[j["child"]] = lo
         parent = e
+    # small grey nameplate on the outer face of the lower arm (link_2)
+    np_ = G.box("robot_nameplate", (0.13, 0.004, 0.055), (0, 0, 0), col)
+    np_.data.materials.append(materials.get("painted", color="#C9CCD0", roughness=0.35, coat=0.0))
+    np_.parent = joints[1]; np_.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+    np_.matrix_basis = mathutils.Matrix.Translation((0.0, -0.2545, 0.55)) @ mathutils.Matrix.Rotation(0.02, 4, 'X')   # side face y=-0.252 at z=0.55, tapering 0.02 rad
     tool0 = parent  # fixed tool0 empty
     tool0.name = "robot_tool0"
     # ---------------- torch
@@ -153,7 +161,9 @@ def _load_mesh(name, path, col):
 
 
 def _build_torch(col, tool0):
-    """Torch geometry in the tool0 frame (+Z out of the flange)."""
+    """Torch geometry in the tool0 frame (+Z out of the flange): anti-collision bracket, straight neck, smooth swept
+    45° elbow (torus segment), head with insulator ring + copper gas nozzle, and a laser seam-tracking sensor whose
+    lens window looks at the TCP, bracketed to a clamp ring on the neck."""
     dark = materials.get("dark_metal")
     black = materials.get("black_plastic")
     brass = materials.get("brass")
@@ -166,38 +176,53 @@ def _build_torch(col, tool0):
     p = G.cylinder("torch_flange", 0.06, 0.015, (0, 0, 0.0075), collection=col); p.data.materials.append(materials.get("machined_steel")); parts.append(p)
     p = G.cylinder("torch_bracket", 0.045, L.TORCH_BRACKET_LEN - 0.02, (0, 0, 0.015 + (L.TORCH_BRACKET_LEN - 0.02) / 2), collection=col); p.data.materials.append(black); parts.append(p)
     p = G.cylinder("torch_sensor_ring", 0.05, 0.03, (0, 0, L.TORCH_BRACKET_LEN - 0.005), collection=col); p.data.materials.append(materials.get("safety_yellow")); parts.append(p)
-    # neck (straight) with insulator
+    # straight neck with clamp, then a smooth elbow (bend radius RB) tangent to both the neck and the head
     z0 = L.TORCH_BRACKET_LEN
-    p = G.cylinder("torch_neck_clamp", 0.03, 0.06, (0, 0, z0 + 0.03), collection=col); p.data.materials.append(dark); parts.append(p)
-    p = G.cylinder("torch_neck", 0.019, L.TORCH_NECK_LEN, (0, 0, z0 + L.TORCH_NECK_LEN / 2), collection=col); p.data.materials.append(dark); parts.append(p)
-    # bend: sphere knuckle + head cylinder along the bent direction
     zb = z0 + L.TORCH_NECK_LEN
-    bpy.ops.mesh.primitive_uv_sphere_add(radius=0.02, location=(0, 0, zb), segments=32, ring_count=16)
-    k = bpy.context.object; k.name = "torch_knuckle"; k.data.materials.append(dark); bpy.ops.object.shade_smooth()
-    for c in list(k.users_collection):
-        c.objects.unlink(k)
-    col.objects.link(k); parts.append(k)
     a = L.TORCH_BEND_ANGLE
+    RB = 0.06
+    tl = RB * math.tan(a / 2)          # tangent length from the bend vertex on each leg
+    rn = 0.019
+    p = G.cylinder("torch_neck_clamp", 0.03, 0.06, (0, 0, z0 + 0.03), collection=col); p.data.materials.append(dark); parts.append(p)
+    p = G.cylinder("torch_neck", rn, L.TORCH_NECK_LEN - tl + 0.002, (0, 0, z0 + (L.TORCH_NECK_LEN - tl + 0.002) / 2), collection=col); p.data.materials.append(dark); parts.append(p)
+    elbow = G.torus_sweep("torch_elbow", RB, a, lambda t: [rn], seg_bend=16, seg_tube=32, collection=col)
+    elbow.location = (0, 0, zb - tl)
+    elbow.data.materials.append(dark); parts.append(elbow)
     d = mathutils.Vector((math.sin(a), 0, math.cos(a)))
     hl = L.TORCH_HEAD_LEN
     def along(t):
         return mathutils.Vector((0, 0, zb)) + d * t
     rot = (0, a, 0)
-    p = G.cylinder("torch_head", 0.017, hl * 0.6, along(hl * 0.3), rot, collection=col); p.data.materials.append(dark); parts.append(p)
+    h0 = tl - 0.002
+    p = G.cylinder("torch_head", 0.017, hl * 0.6 - h0, along((h0 + hl * 0.6) / 2), rot, collection=col); p.data.materials.append(dark); parts.append(p)
+    p = G.cylinder("torch_insulator", L.TORCH_NOZZLE_R + 0.0065, 0.018, along(hl * 0.58 + 0.009), rot, vertices=32, collection=col); p.data.materials.append(black); parts.append(p)
     p = G.cylinder("torch_gas_nozzle", L.TORCH_NOZZLE_R + 0.004, hl * 0.42, along(hl * 0.79), rot, vertices=32, collection=col); p.data.materials.append(copper); parts.append(p)
     p = G.cylinder("torch_contact_tip", 0.0045, 0.03, along(hl - 0.01), rot, vertices=16, collection=col); p.data.materials.append(brass); parts.append(p)
     p = G.cylinder("torch_wire", 0.0008, L.TORCH_STICKOUT + 0.02, along(hl + L.TORCH_STICKOUT / 2 - 0.005), rot, vertices=8, collection=col); p.data.materials.append(brass); parts.append(p)
-    # seam-tracking laser sensor box on the neck side
-    s = G.box("torch_laser_sensor", (0.05, 0.035, 0.09), (0.045, 0.0, zb - 0.06), col, bevel=0.004)
-    s.rotation_euler = (0, a * 0.5, 0); s.data.materials.append(materials.get("painted", color="#1E2A44", roughness=0.35)); parts.append(s)
-    lens = G.box("torch_laser_lens", (0.012, 0.02, 0.02), (0.045 + 0.02, 0.0, zb - 0.045), col)
-    lens.rotation_euler = (0, a * 0.5, 0); lens.data.materials.append(materials.get("glass_dark")); parts.append(lens)
+    # seam-tracking laser sensor: body axis aimed at the TCP, lens window on the end face, bracket + clamp ring on the neck
+    tcp = mathutils.Vector(tool_transform()[:3, 3].tolist())
+    sc = mathutils.Vector((0.052, 0.0, zb - 0.05))
+    dv = (tcp - sc).normalized()
+    theta = math.atan2(dv.x, dv.z)
+    Rs = mathutils.Matrix.Rotation(theta, 4, 'Y')
+    s = G.box("torch_laser_sensor", (0.05, 0.035, 0.09), (0, 0, 0), col, bevel=0.004)
+    s.data.materials.append(materials.get("painted", color="#1E2A44", roughness=0.35)); parts.append(s)
+    lens = G.box("torch_laser_lens", (0.02, 0.025, 0.004), (0, 0, 0), col)
+    lens.data.materials.append(materials.get("glass_dark")); parts.append(lens)
+    label = G.box("torch_laser_label", (0.03, 0.0015, 0.05), (0, 0, 0), col)
+    label.data.materials.append(materials.get("painted", color="#D9DBDD", roughness=0.4, coat=0.0)); parts.append(label)
+    placed = [(s, mathutils.Matrix.Identity(4)), (lens, mathutils.Matrix.Translation((0, 0, 0.045))),
+              (label, mathutils.Matrix.Translation((0, 0.018, 0.0)))]
+    ring = G.cylinder("torch_sensor_clamp", 0.024, 0.018, (0, 0, zb - 0.05), collection=col); ring.data.materials.append(dark); parts.append(ring)
+    br = G.box("torch_sensor_bracket", (0.05, 0.016, 0.012), (0.026, 0, zb - 0.05), col); br.data.materials.append(dark); parts.append(br)
     sensor = G.empty("torch_sensor", collection=col, size=0.03)
     sensor.matrix_world = G.M(tool_transform()) @ mathutils.Matrix.Translation((0.0, 0.0, -0.045))
     sensor.parent = root; sensor.matrix_parent_inverse = mathutils.Matrix.Identity(4)
     for p in parts:
         p.parent = root
         p.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+    for p, m in placed:
+        p.matrix_basis = mathutils.Matrix.Translation(sc) @ Rs @ m
     bpy.context.view_layer.update()
     return dict(root=root, parts=parts, sensor=sensor)
 
@@ -217,43 +242,127 @@ def _build_feeder(col, j3):
     return dict(box=f, outlet=out)
 
 
+def _hose_material():
+    """Black corrugated hose: cable_black look plus a wave bump along the hose (arc length attribute "hose_u", metres,
+    written by the geometry-nodes modifier of the hose)."""
+    m = bpy.data.materials.get("hose_corrugated")
+    if m is not None:
+        return m
+    m = bpy.data.materials.new("hose_corrugated")
+    m.use_nodes = True
+    nt = m.node_tree
+    b = nt.nodes["Principled BSDF"]
+    b.inputs["Base Color"].default_value = (0.02, 0.02, 0.022, 1.0)
+    b.inputs["Roughness"].default_value = 0.6
+    b.inputs["Specular IOR Level"].default_value = 0.35
+    attr = nt.nodes.new("ShaderNodeAttribute")
+    attr.attribute_name = "hose_u"
+    xyz = nt.nodes.new("ShaderNodeCombineXYZ")
+    nt.links.new(attr.outputs["Fac"], xyz.inputs["X"])
+    wave = nt.nodes.new("ShaderNodeTexWave")
+    wave.wave_type = 'BANDS'
+    wave.bands_direction = 'X'
+    wave.wave_profile = 'SIN'
+    wave.inputs["Scale"].default_value = HOSE_WAVE_SCALE
+    wave.inputs["Distortion"].default_value = 0.0
+    wave.inputs["Detail"].default_value = 0.0
+    nt.links.new(xyz.outputs["Vector"], wave.inputs["Vector"])
+    bump = nt.nodes.new("ShaderNodeBump")
+    bump.inputs["Strength"].default_value = 0.4
+    bump.inputs["Distance"].default_value = 0.002
+    nt.links.new(wave.outputs["Fac"], bump.inputs["Height"])
+    nt.links.new(bump.outputs["Normal"], b.inputs["Normal"])
+    return m
+
+
+def _hose_tube(ob, mat):
+    """Geometry-nodes modifier: resample the (hooked) curve by length, store the arc length as "hose_u", sweep a circle
+    profile of HOSE_RADIUS along it and assign the hose material (replaces the curve bevel, whose UV u is not
+    proportional to length so the corrugation pitch would change from segment to segment)."""
+    ng = bpy.data.node_groups.get("hose_tube")
+    if ng is None:
+        ng = bpy.data.node_groups.new("hose_tube", 'GeometryNodeTree')
+        ng.interface.new_socket("Geometry", in_out='INPUT', socket_type='NodeSocketGeometry')
+        ng.interface.new_socket("Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
+        n = ng.nodes
+        gin, gout = n.new("NodeGroupInput"), n.new("NodeGroupOutput")
+        res = n.new("GeometryNodeResampleCurve"); res.mode = 'LENGTH'; res.inputs["Length"].default_value = 0.008
+        par = n.new("GeometryNodeSplineParameter")
+        st = n.new("GeometryNodeStoreNamedAttribute"); st.data_type = 'FLOAT'; st.domain = 'POINT'; st.inputs["Name"].default_value = "hose_u"
+        circ = n.new("GeometryNodeCurvePrimitiveCircle"); circ.inputs["Resolution"].default_value = 16; circ.inputs["Radius"].default_value = HOSE_RADIUS
+        c2m = n.new("GeometryNodeCurveToMesh"); c2m.inputs["Fill Caps"].default_value = True
+        sm = n.new("GeometryNodeSetShadeSmooth")
+        setm = n.new("GeometryNodeSetMaterial"); setm.inputs["Material"].default_value = mat
+        lk = ng.links.new
+        lk(gin.outputs["Geometry"], res.inputs["Curve"]); lk(res.outputs["Curve"], st.inputs["Geometry"])
+        lk(par.outputs["Length"], st.inputs["Value"]); lk(st.outputs["Geometry"], c2m.inputs["Curve"])
+        lk(circ.outputs["Curve"], c2m.inputs["Profile Curve"]); lk(c2m.outputs["Mesh"], sm.inputs["Geometry"])
+        lk(sm.outputs["Geometry"], setm.inputs["Geometry"]); lk(setm.outputs["Geometry"], gout.inputs["Geometry"])
+    m = ob.modifiers.new("tube", 'NODES')
+    m.node_group = ng
+    return m
+
+
 def _build_hose(col, joints, torch, feeder):
-    """Hose package (torch cable) as a bezier curve hooked to points on the arm and the torch."""
+    """Hose package (torch cable) as a bezier curve hooked to anchors on the arm and the torch.
+
+    Anchors: feeder outlet -> two clamps on top of the forearm (link_4) -> over the wrist pitch axis (link_5) -> torch
+    root.  Each control point's handles are set along the local arm direction of its anchor, and the hook modifiers
+    carry point + handles rigidly with the anchor, so the hose keeps resting on the arm for any joint angles.
+    """
+    dark = materials.get("dark_metal")
     cu = bpy.data.curves.new("hose_curve", 'CURVE')
     cu.dimensions = '3D'
-    cu.bevel_depth = 0.02
-    cu.bevel_resolution = 6
     cu.resolution_u = 12
     sp = cu.splines.new('BEZIER')
-    sp.bezier_points.add(3)
     ob = bpy.data.objects.new("hose", cu)
     col.objects.link(ob)
-    ob.data.materials.append(materials.get("cable_black"))
+    # (parent, local offset, local tangent direction, handle length)
     anchors = [
-        (feeder["outlet"], (0, 0, 0)),
-        (joints[3], (0.55, 0.0, 0.22)),     # on the forearm, above
-        (joints[5], (0.0, 0.0, -0.3)),      # behind the wrist... (link_6 frame: z along flange axis)
-        (torch["root"], (-0.03, 0.0, 0.05)),
+        (feeder["outlet"], (0, 0, 0), (1.0, 0, -0.35), 0.09),
+        (joints[3], (0.35, 0.0, _FOREARM_TOP[0.35] + 0.04 + HOSE_RADIUS * 0.75), (1.0, 0, 0), 0.12),
+        (joints[3], (0.75, 0.0, _FOREARM_TOP[0.75] + 0.04 + HOSE_RADIUS * 0.75), (1.0, 0, 0), 0.10),
+        (joints[4], (0.0, 0.0, 0.13), (1.0, 0, 0), 0.07),
+        (torch["root"], (-0.052, 0.0, 0.055), (0.45, 0, 1.0), 0.06),    # dives into the side of the anti-collision bracket
     ]
+    sp.bezier_points.add(len(anchors) - 1)
     empties = []
-    for i, (par, off) in enumerate(anchors):
+    for i, (par, off, tan, hl) in enumerate(anchors):
         e = G.empty(f"hose_anchor{i}", collection=col, size=0.04)
         e.parent = par
         e.matrix_parent_inverse = mathutils.Matrix.Identity(4)
         e.matrix_basis = mathutils.Matrix.Translation(off)
         empties.append(e)
     bpy.context.view_layer.update()
-    for i, e in enumerate(empties):
+    for i, (e, (par, off, tan, hl)) in enumerate(zip(empties, anchors)):
         p = sp.bezier_points[i]
-        p.co = e.matrix_world.translation
-        p.handle_left_type = p.handle_right_type = 'AUTO'
+        co = e.matrix_world.translation
+        t = (par.matrix_world.to_3x3() @ mathutils.Vector(tan)).normalized()
+        p.handle_left_type = p.handle_right_type = 'FREE'
+        p.co = co
+        p.handle_left = co - t * hl
+        p.handle_right = co + t * hl
     for i, e in enumerate(empties):
         m = ob.modifiers.new(f"hook{i}", 'HOOK')
         m.object = e
         m.vertex_indices_set([3 * i, 3 * i + 1, 3 * i + 2])
         m.matrix_inverse = e.matrix_world.inverted()
         m.center = e.matrix_world.translation
-    return dict(curve=ob, anchors=empties)
+    _hose_tube(ob, _hose_material())        # after the hooks: hooks move the control points, the tube is built from them
+    # clamp blocks on the forearm (hose rests on them) with a strap ring around the hose
+    clamps = []
+    for k, x in enumerate((0.35, 0.75)):
+        zt = _FOREARM_TOP[x]
+        c = G.box(f"hose_clamp{k}", (0.05, 0.05, 0.04), (0, 0, 0), col, bevel=0.003); c.data.materials.append(dark)
+        c.parent = joints[3]; c.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+        c.matrix_basis = mathutils.Matrix.Translation((x, 0.0, zt + 0.02))
+        r = HOSE_RADIUS
+        strap = G.revolve(f"hose_strap{k}", [(r + 0.001, -0.012), (r + 0.004, -0.012), (r + 0.004, 0.012), (r + 0.001, 0.012)], segments=24, axis='X', collection=col)
+        strap.data.materials.append(dark)
+        strap.parent = joints[3]; strap.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+        strap.matrix_basis = mathutils.Matrix.Translation((x, 0.0, zt + 0.04 + r * 0.75))
+        clamps += [c, strap]
+    return dict(curve=ob, anchors=empties, clamps=clamps)
 
 
 def set_q(robot, q, frame=None):
