@@ -104,6 +104,37 @@ def setup_render(sc, engine, res, samples=None):
         sc.eevee.volumetric_tile_size = '16'
 
 
+def apply_fx_off(sc, spec):
+    """Selectively disable expensive features (profiling / low-quality previews)."""
+    offs = {x.strip() for x in spec.split(",") if x.strip()}
+    if not offs:
+        return
+    if "raytracing" in offs:
+        sc.eevee.use_raytracing = False
+    if "fastgi" in offs:
+        sc.eevee.use_fast_gi = False
+    if "shadows" in offs:
+        sc.eevee.use_shadows = False
+    if "softshadow" in offs:
+        for lt in bpy.data.lights:
+            lt.shadow_soft_size = 0.0
+    if "volumetric" in offs:
+        for ob in bpy.data.objects:
+            if ob.type == 'MESH' and any(m and m.node_tree and any(n.type in ('VOLUME_PRINCIPLED', 'VOLUME_SCATTER', 'VOLUME_ABSORPTION') for n in m.node_tree.nodes) for m in ob.data.materials):
+                ob.hide_render = True
+    if "dof" in offs:
+        for cd in bpy.data.cameras:
+            cd.dof.use_dof = False
+    if "glare" in offs:
+        sc.use_nodes = False
+    if "particles" in offs:
+        for ob in bpy.data.objects:
+            for mod in ob.modifiers:
+                if mod.type == 'PARTICLE_SYSTEM':
+                    mod.show_render = False
+    print("[build] fx off:", sorted(offs))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--still", type=int, help="render a single frame")
@@ -122,6 +153,7 @@ def main():
     ap.add_argument("--save", type=str)
     ap.add_argument("--outdir", type=str, default=os.path.join(HERE, "out", "frames"))
     ap.add_argument("--camera", type=str, help="force a camera (name) for stills")
+    ap.add_argument("--fx-off", type=str, default="", help="comma list: raytracing,fastgi,volumetric,dof,glare,shadows,particles,softshadow")
     a = ap.parse_args()
 
     if a.export_stl:
@@ -142,6 +174,7 @@ def main():
         res = tuple(a.res) if a.res else (640, 360)
         a.step = a.step if a.step != 1 else 8
     setup_render(sc, a.engine, res, a.samples)
+    apply_fx_off(sc, a.fx_off)
     os.makedirs(a.outdir, exist_ok=True)
 
     frames = []

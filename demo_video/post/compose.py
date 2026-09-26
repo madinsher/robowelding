@@ -24,7 +24,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # demo_video/ on the path
 from post import overlays as ov_mod          # noqa: E402
@@ -161,7 +161,7 @@ def compose(frames_dir: str, out_path: str, storyboard: str, audio: bool = True,
         run(cmd, verbose)
         if keep_temp:
             keep = Path(out_path).with_suffix("").as_posix() + "_tmp"
-            shutil.copytree(tmp_root, keep, dirs_exist_ok=True)
+            shutil.copytree(tmp_root, keep, dirs_exist_ok=True, ignore=shutil.ignore_patterns("seq"))
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
     return out_path

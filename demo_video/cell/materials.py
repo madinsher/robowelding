@@ -309,7 +309,7 @@ def _arc_mask(nt, u, i):
     welded = math('LESS_THAN', rel, prog)
     # heat behind the arc
     gap = math('SUBTRACT', prog, rel)
-    heat = math('DIVIDE', gap, 0.07)
+    heat = math('DIVIDE', gap, 0.045)
     heat = math('SUBTRACT', 1.0, heat)
     heat = math('MAXIMUM', heat, 0.0)
     heat = math('MINIMUM', heat, 1.0)
@@ -362,7 +362,7 @@ def _weld_bead():
     cr.elements[-1].position = 1.0; cr.elements[-1].color = (1.0, 0.85, 0.5, 1)
     nt.links.new(p2.outputs[0], ramp.inputs["Fac"])
     nt.links.new(ramp.outputs["Color"], b.inputs["Emission Color"])
-    es = nt.nodes.new("ShaderNodeMath"); es.operation = 'MULTIPLY'; es.inputs[1].default_value = 25.0
+    es = nt.nodes.new("ShaderNodeMath"); es.operation = 'MULTIPLY'; es.inputs[1].default_value = 6.0
     nt.links.new(p2.outputs[0], es.inputs[0]); nt.links.new(es.outputs[0], b.inputs["Emission Strength"])
     # ripples: wave texture along the angle
     wave = nt.nodes.new("ShaderNodeTexWave")

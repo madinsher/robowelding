@@ -9,7 +9,7 @@ can override the colours below.
 """
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
