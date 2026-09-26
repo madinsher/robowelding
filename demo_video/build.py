@@ -188,6 +188,10 @@ def main():
         for m in list(sc.timeline_markers):
             sc.timeline_markers.remove(m)
         sc.camera = bpy.data.objects[a.camera]
+    if frames and vfx is not None and not a.no_vfx and (len(frames) == 1 or frames[0] > 1 or a.step > 1) and hasattr(vfx, "bake_particles"):
+        t0 = time.time()
+        vfx.bake_particles(sc)
+        print(f"[build] particles baked in {time.time() - t0:.1f}s")
     t_all = time.time()
     for i, f in enumerate(frames):
         sc.frame_set(f)
