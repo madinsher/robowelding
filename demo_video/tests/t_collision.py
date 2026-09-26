@@ -22,7 +22,9 @@ ramp(track, A.T["track_to_A"], L.ROBOT_HOME_Y, A.TRACK_A); ramp(track, A.T["trac
 ramp(track, A.T["track_to_B2"], A.TRACK_B1, A.TRACK_B2); ramp(track, A.T["track_home"], A.TRACK_B2, L.ROBOT_HOME_Y)
 
 def spool_polyline(Ts):
-    pts = [(0, 0, -0.03, 0.2), (0, 0, 0.0, 0.2), (0, 0, L.SEAM_A_Z, L.SEAM_RADIUS)]   # (x,y,z, radius): fixture+flange, hub
+    # (x,y,z, radius): fixture ring + flange disc, then the weld-neck hub tapering to the pipe radius at seam A
+    pts = [(0, 0, -0.03, 0.2025), (0, 0, L.FLANGE_THK, 0.2025), (0, 0, L.FLANGE_THK + 0.001, 0.165),
+           (0, 0, L.SEAM_A_Z - 0.035, L.SEAM_RADIUS + 0.004), (0, 0, L.SEAM_A_Z, L.SEAM_RADIUS)]
     for k in range(1, 13):
         th = math.pi / 2 * k / 12
         pts.append((L.ELBOW_R * (1 - math.cos(th)), 0, L.SEAM_A_Z + L.ELBOW_R * math.sin(th), L.SEAM_RADIUS))
@@ -33,15 +35,22 @@ def spool_polyline(Ts):
         out.append(((Ts @ np.array([x, y, zz, 1.0]))[:3], r))
     return out
 
-def seg_dist(p1, p2, q1, q2):
-    """min distance between segments p1p2 and q1q2 (sampled, robust enough)."""
+def seg_dist(p1, p2, q1, q2, r1=0.0, r2=0.0):
+    """min clearance between robot segment p1p2 (sampled) and a flat-ended cylinder/cone segment q1q2 with radii r1->r2."""
     best = 1e9
+    d = q2 - q1; L2 = float(d @ d); Ln = math.sqrt(L2) if L2 > 1e-12 else 1e-6
     for s in np.linspace(0, 1, 9):
         a = p1 + (p2 - p1) * s
-        d = q2 - q1; L2 = float(d @ d)
-        t = 0.0 if L2 < 1e-12 else min(1.0, max(0.0, float((a - q1) @ d) / L2))
-        b = q1 + d * t
-        best = min(best, float(np.linalg.norm(a - b)))
+        t = 0.0 if L2 < 1e-12 else float((a - q1) @ d) / L2
+        axis_pt = q1 + d * min(1.0, max(0.0, t))
+        radial = float(np.linalg.norm(a - axis_pt)) if 0.0 <= t <= 1.0 else float(np.linalg.norm(np.cross(a - q1, d) / Ln))
+        if 0.0 <= t <= 1.0:
+            c = radial - (r1 + (r2 - r1) * t)
+        else:
+            over = (-t if t < 0 else t - 1.0) * Ln
+            r_end = r1 if t < 0 else r2
+            c = math.sqrt(over * over + max(0.0, radial - r_end) ** 2)
+        best = min(best, c)
     return best
 
 worst = {}
@@ -59,7 +68,7 @@ for i in range(nF):
     for name, s0, s1, rl in segs:
         m = 1e9
         for (a, ra), (b, rb) in zip(poly[:-1], poly[1:]):
-            m = min(m, seg_dist(s0, s1, a, b) - rl - max(ra, rb))
+            m = min(m, seg_dist(s0, s1, a, b, ra, rb) - rl)
         allow = -0.03 if (name == "torch_head" and f in weld_frames) else 0.02
         if m < allow:
             worst.setdefault(name, []).append((f, round(m, 3)))
