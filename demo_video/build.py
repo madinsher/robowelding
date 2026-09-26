@@ -29,6 +29,9 @@ except Exception as e:
     print("[build] vfx module unavailable:", e)
 
 
+ARC_LIGHT_POWER = 90.0      # W; the hall is lit with a few hundred W, 500 W bleached the part around the arc
+
+
 def build_scene(with_env=True, with_vfx=True):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     sc = bpy.context.scene
@@ -58,6 +61,7 @@ def build_scene(with_env=True, with_vfx=True):
     fx = None
     if with_vfx and vfx is not None:
         t0 = time.time()
+        vfx.ARC_LIGHT_POWER = ARC_LIGHT_POWER
         fx = vfx.build(anim["arc"], anim["weld_intervals"])
         vfx.laser_line(rob["torch"]["sensor"], anim["laser_intervals"])
         vfx.setup_compositor(sc)
@@ -115,6 +119,11 @@ def apply_fx_off(sc, spec):
         sc.eevee.use_fast_gi = False
     if "shadows" in offs:
         sc.eevee.use_shadows = False
+    if "bayshadows" in offs:      # shadows only from the key light and the arc
+        keep = {"env_light_key", "ArcLight"}
+        for ob in bpy.data.objects:
+            if ob.type == 'LIGHT' and ob.name not in keep:
+                ob.data.use_shadow = False
     if "softshadow" in offs:
         for lt in bpy.data.lights:
             lt.shadow_soft_size = 0.0
