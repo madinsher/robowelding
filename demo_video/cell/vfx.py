@@ -30,7 +30,7 @@ from mathutils import Vector, Matrix
 from . import layout as L
 
 # ------------------------------------------------------------------ tunables
-ARC_LIGHT_POWER = 160.0           # W; EEVEE point light, flickers +/- ARC_FLICKER
+ARC_LIGHT_POWER = 120.0           # W; EEVEE point light, flickers +/- ARC_FLICKER
 ARC_LIGHT_RANGE = 3.0             # m; EEVEE custom cutoff so the arc does not light the whole hall
 ARC_LIGHT_BACK = 0.006            # m; the light sits this far back from the wire tip: just below the contact tip (which would shadow it) but off the steel
 ARC_LIGHT_VOLUME = 0.015          # light scattering in the fume plume (a glow at the base, not a white cloud)
