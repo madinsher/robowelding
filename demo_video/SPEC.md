@@ -29,7 +29,9 @@ Conventions:
 * Every builder puts its objects in its own collection (`bpy.data.collections.new(name)` linked to
   the scene collection) and returns the objects it created; nothing touches other collections.
 * Materials come from `cell.materials` — call `materials.get("abb_orange")` etc.; add new ones there.
-* Keep geometry moderate (< 1.5 M triangles total); EEVEE render, 1080p, ~10 s/frame budget.
+* Keep geometry moderate (< 1.5 M triangles total). EEVEE Next on this CPU (software GL) costs ~1 s per TAA
+  sample at 640x360 and scales with pixel count, so the final render uses few samples and runs in background chunks
+  (`build.py --render --start A --end B`).
 * Blender 4.5 API: `bpy.ops.wm.stl_import`, `shade_smooth_by_angle`, EEVEE is `BLENDER_EEVEE_NEXT`,
   no bloom setting (use compositor Glare node), lights use `energy`, `shadow_soft_size`.
 * Test scripts go in `tests/` and are run with `python3 tests/<name>.py` (they render stills to
