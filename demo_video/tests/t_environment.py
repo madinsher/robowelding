@@ -2,7 +2,7 @@
 
     xvfb-run -a python3 tests/t_environment.py [--res W H] [--samples N] [--cam wide|medium|reverse ...]
 """
-import bpy, sys, os, math, time, argparse
+import bpy, sys, os, time, argparse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import mathutils
 from cell import environment, materials, geom as G

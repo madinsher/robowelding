@@ -28,14 +28,14 @@ from mathutils import Vector, Matrix
 from . import layout as L
 
 # ------------------------------------------------------------------ tunables
-ARC_LIGHT_POWER = 800.0          # W; EEVEE point light, flickers +/- ARC_FLICKER
+ARC_LIGHT_POWER = 500.0          # W; EEVEE point light, flickers +/- ARC_FLICKER
 ARC_LIGHT_RANGE = 3.0             # m; EEVEE custom cutoff so the arc does not light the whole hall
 ARC_FLICKER = 0.25
 ARC_FLICKER_HZ = 10.0
 ARC_LIGHT_COLOR = (0.72, 0.82, 1.0)
 ARC_CORE_RADIUS = 0.003           # 6 mm core sphere
-ARC_GLOW_RADIUS = 0.022           # soft halo sphere
-SPARK_RATE = 260.0                # particles / s
+ARC_GLOW_RADIUS = 0.026           # soft halo sphere
+SPARK_RATE = 320.0                # particles / s
 SPARK_LIFE = (0.3, 0.8)           # s (min, max)
 SPARK_SPEED = 2.2                 # m/s along the reflected torch direction
 SMOKE_FADE_IN = 0.4               # s
@@ -177,20 +177,23 @@ def _glow_material():
     nt.links.new(lw.outputs["Facing"], inv.inputs[1])
     pw = nt.nodes.new("ShaderNodeMath"); pw.operation = 'POWER'; pw.inputs[1].default_value = 2.2
     nt.links.new(inv.outputs[0], pw.inputs[0])
+    alpha = nt.nodes.new("ShaderNodeMath"); alpha.operation = 'POWER'; alpha.inputs[1].default_value = 2.0
+    nt.links.new(inv.outputs[0], alpha.inputs[0])
     ramp = nt.nodes.new("ShaderNodeValToRGB")
     cr = ramp.color_ramp
-    cr.elements[0].position = 0.0; cr.elements[0].color = (1.0, 0.45, 0.12, 1)   # rim: warm orange
+    cr.elements[0].position = 0.0; cr.elements[0].color = (1.0, 0.4, 0.1, 1)     # rim: warm orange
     e = cr.elements.new(0.45); e.color = (1.0, 0.75, 0.5, 1)
     cr.elements[-1].position = 1.0; cr.elements[-1].color = (0.7, 0.85, 1.0, 1)   # centre: blue-white
     nt.links.new(pw.outputs[0], ramp.inputs["Fac"])
     em = nt.nodes.new("ShaderNodeEmission")
     nt.links.new(ramp.outputs["Color"], em.inputs["Color"])
-    st = nt.nodes.new("ShaderNodeMath"); st.operation = 'MULTIPLY'; st.inputs[1].default_value = 30.0
+    st = nt.nodes.new("ShaderNodeMath"); st.operation = 'MULTIPLY_ADD'
+    st.inputs[1].default_value = 40.0; st.inputs[2].default_value = 1.0        # dim warm rim, hot centre
     nt.links.new(pw.outputs[0], st.inputs[0])
     nt.links.new(st.outputs[0], em.inputs["Strength"])
     tr = nt.nodes.new("ShaderNodeBsdfTransparent")
     mix = nt.nodes.new("ShaderNodeMixShader")
-    nt.links.new(pw.outputs[0], mix.inputs["Fac"])
+    nt.links.new(alpha.outputs[0], mix.inputs["Fac"])
     nt.links.new(tr.outputs[0], mix.inputs[1])
     nt.links.new(em.outputs[0], mix.inputs[2])
     nt.links.new(mix.outputs[0], out.inputs["Surface"])
@@ -266,7 +269,7 @@ def _spark_material(arc_empty):
     return m
 
 
-def _smoke_material(box):
+def _smoke_material():
     """Principled Volume plume: soft column mask (object space) x drifting world-space noise x
     the object's keyframed "smoke" property (fade in/out)."""
     m = bpy.data.materials.new("vfx_smoke")
@@ -296,9 +299,9 @@ def _smoke_material(box):
     sep = nt.nodes.new("ShaderNodeSeparateXYZ")
     nt.links.new(tc.outputs["Object"], sep.inputs[0])
     h = math('ADD', sep.outputs["Z"], 0.5)                    # 0 at the bottom .. 1 at the top
-    # column radius grows with height: r_max = 0.12 + 0.4*h ; radial mask = 1 - (r/r_max)^2
+    # column radius grows with height: r_max = 0.08 + 0.32*h ; radial mask = 1 - (r/r_max)^2
     r2 = math('ADD', math('POWER', sep.outputs["X"], 2.0), math('POWER', sep.outputs["Y"], 2.0))
-    rmax = math('MULTIPLY_ADD', h, 0.40, 0.12)
+    rmax = math('MULTIPLY_ADD', h, 0.32, 0.08)
     radial = math('SUBTRACT', 1.0, math('DIVIDE', r2, math('POWER', rmax, 2.0)), clamp=True)
     # vertical envelope: quick rise from the bottom, fade to nothing at the top
     vert = math('MULTIPLY', math('MINIMUM', math('DIVIDE', h, 0.15), 1.0), math('SUBTRACT', 1.0, math('POWER', h, 1.5)), clamp=True)
@@ -316,14 +319,14 @@ def _smoke_material(box):
     vm = nt.nodes.new("ShaderNodeVectorMath"); vm.operation = 'ADD'
     nt.links.new(geo.outputs["Position"], vm.inputs[0]); nt.links.new(rise.outputs[0], vm.inputs[1])
     noise = nt.nodes.new("ShaderNodeTexNoise")
-    noise.inputs["Scale"].default_value = 9.0
-    noise.inputs["Detail"].default_value = 3.0
+    noise.inputs["Scale"].default_value = 12.0
+    noise.inputs["Detail"].default_value = 4.0
     noise.inputs["Roughness"].default_value = 0.55
     nt.links.new(vm.outputs[0], noise.inputs["Vector"])
-    wisps = math('SUBTRACT', math('MULTIPLY', noise.outputs["Fac"], 1.8), 0.45, clamp=True)
+    wisps = math('SUBTRACT', math('MULTIPLY', noise.outputs["Fac"], 2.6), 0.95, clamp=True)
     # keyframed on/off + fade from the box object's "smoke" property
     attr = nt.nodes.new("ShaderNodeAttribute"); attr.attribute_type = 'OBJECT'; attr.attribute_name = "smoke"
-    dens = math('MULTIPLY', math('MULTIPLY', mask, wisps), math('MULTIPLY', attr.outputs["Fac"], 25.0))
+    dens = math('MULTIPLY', math('MULTIPLY', mask, wisps), math('MULTIPLY', attr.outputs["Fac"], 30.0))
     nt.links.new(dens, vol.inputs["Density"])
     return m
 
@@ -382,7 +385,7 @@ def build(arc_empty, weld_intervals, collection=None):
     emitter.visible_shadow = False
     systems = []
     for i, (s, e) in enumerate(intervals):
-        mod = emitter.modifiers.new(f"sparks_{i}", 'PARTICLE_SYSTEM')
+        emitter.modifiers.new(f"sparks_{i}", 'PARTICLE_SYSTEM')
         psys = emitter.particle_systems[-1]
         psys.seed = 100 + i
         ps = psys.settings
@@ -423,13 +426,13 @@ def build(arc_empty, weld_intervals, collection=None):
     bm = bmesh.new()
     bmesh.ops.create_cube(bm, size=1.0)
     smoke = _mesh_object("FumePlume", bm, col)
-    smoke.scale = (0.5, 0.5, 0.7)
-    smoke.location = (0, 0, 0.30)     # offset added to the arc position (Z of box bottom ~ arc - 0.05)
+    smoke.scale = (0.45, 0.45, 0.6)
+    smoke.location = (0, 0, 0.26)     # offset added to the arc position (box bottom ~ 0.04 below the arc)
     con = smoke.constraints.new('COPY_LOCATION')
     con.target = arc_empty
     con.use_offset = True
     smoke.visible_shadow = False
-    smoke.data.materials.append(_smoke_material(smoke))
+    smoke.data.materials.append(_smoke_material())
     smoke["smoke"] = 0.0
     _key(smoke, '["smoke"]', 1, 0.0)
     fi, fo = max(1, int(SMOKE_FADE_IN * L.FPS)), max(1, int(SMOKE_FADE_OUT * L.FPS))

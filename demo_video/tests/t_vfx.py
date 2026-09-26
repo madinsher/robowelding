@@ -12,7 +12,7 @@ import sys
 import time
 
 import bpy
-from mathutils import Vector, Matrix
+from mathutils import Vector
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from cell import materials, vfx, layout as L, geom as G
@@ -71,9 +71,13 @@ for fc in arc.animation_data.action.fcurves:
         for kp in fc.keyframe_points:
             kp.interpolation = 'CONSTANT'
 
-# ---- VFX under test
+# ---- VFX under test (plus the seam-search laser on frames 1..8, before the arc starts)
 fx = vfx.build(arc, [(10, 110)])
 vfx.setup_compositor(sc)
+sensor = G.empty("Sensor", size=0.05)
+sensor.location = (0.03, 0.22, CYL_Z + CYL_R + 0.06)
+sensor.rotation_euler = (math.pi, 0, math.radians(90))     # +Z points straight down onto the pipe
+laser = vfx.laser_line(sensor, [(1, 8)])
 
 # ---- camera at (0.9,-0.8,1.35) looking at the empty's midway position (angle 90 deg = top of the pipe)
 mid = Vector((0.0, 0.0, CYL_Z + ORBIT_R))

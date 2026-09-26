@@ -206,7 +206,9 @@ def _mat_floor():
     m = materials.get("concrete").copy()
     m.name = key
     nt, bsdf = _nodes(m)
-    bsdf.inputs["Base Color"].default_value = (0.21, 0.20, 0.185, 1)
+    bsdf.inputs["Base Color"].default_value = (0.115, 0.108, 0.10, 1)
+    bsdf.inputs["Roughness"].default_value = 0.72
+    bsdf.inputs["Specular IOR Level"].default_value = 0.2
     sep = _sep_object_coords(nt)
     # tyre / dirt streaks stretched along X
     streak = nt.nodes.new("ShaderNodeTexNoise")
@@ -216,8 +218,8 @@ def _mat_floor():
     nt.links.new(_math(nt, 'MULTIPLY', sep.outputs["X"], 0.25), comb.inputs["X"])
     nt.links.new(_math(nt, 'MULTIPLY', sep.outputs["Y"], 3.0), comb.inputs["Y"])
     nt.links.new(comb.outputs[0], streak.inputs["Vector"])
-    smask = _math(nt, 'MULTIPLY', _math(nt, 'GREATER_THAN', streak.outputs["Fac"], 0.56), 0.35)
-    _tint_base_color(nt, bsdf, smask, (0.11, 0.10, 0.095))
+    smask = _math(nt, 'MULTIPLY', _math(nt, 'GREATER_THAN', streak.outputs["Fac"], 0.54), 0.45)
+    _tint_base_color(nt, bsdf, smask, (0.07, 0.065, 0.06))
     # expansion joints
     joints = _math(nt, 'MAXIMUM', _line_mask(nt, sep.outputs["X"], L.COLUMN_SPACING, 0.014),
                    _line_mask(nt, sep.outputs["Y"], L.COLUMN_SPACING, 0.014))
@@ -290,7 +292,7 @@ def _mats():
         dark=materials.get("dark_metal"), black=materials.get("black_plastic"), rubber=materials.get("rubber"),
         galv=materials.get("galvanized"), steel=materials.get("machined_steel"), pipe=materials.get("steel_pipe"),
         brass=materials.get("brass"),
-        cable=materials.get("cable_black"), glass=materials.get("glass_dark"), fence=materials.get("fence_mesh", pitch=0.06, wire=0.003),
+        cable=materials.get("cable_black"), glass=materials.get("glass_dark"), fence=materials.get("fence_mesh", color="#2A2A2A", pitch=0.06, wire=0.003),   # dark mesh, yellow frames (X-Guard style)
         wood=materials.get("painted", color="#8A6A42", roughness=0.8, coat=0.0),
         cabinet=materials.get("painted", color="#B9BCBE", roughness=0.5),
         cabinet_dark=materials.get("painted", color="#5A5D60", roughness=0.5),
@@ -470,7 +472,8 @@ def _fence_bay(b, M, name, p0, p1, z0=0.12, z1=None):
 
 def _post(b, M, name, x, y, h=None):
     h = h or L.FENCE_H
-    _box(b, name, (0.06, 0.06, h), (x, y, h / 2), M["dark"])
+    _box(b, name, (0.06, 0.06, h), (x, y, h / 2), M["yellow"])
+    _box(b, name + "_cap", (0.07, 0.07, 0.01), (x, y, h + 0.005), M["black"])
     _box(b, name + "_plate", (0.16, 0.16, 0.012), (x, y, 0.006), M["dark"])
 
 
@@ -772,7 +775,7 @@ def _finished_rack(b, M):
     px, py, _ = L.FINISHED_RACK["pos"]
     px -= 0.3
     for k, dy in enumerate((-0.7, 0.7)):
-        _sleeper(b, M, f"env_rack_sleeper_{k}", 1.0, (px, py + dy, 0.05), (0, 0, math.pi / 2))
+        _sleeper(b, M, f"env_rack_sleeper_{k}", 0.9, (px - 0.03, py + dy, 0.05), (0, 0, math.pi / 2))
     spools = [  # (pipe OD, wall, flange OD, flange thk, length, x offset, y offset)
         (0.219, 0.008, 0.340, 0.024, 2.0, -0.32, 0.0),
         (0.168, 0.007, 0.285, 0.022, 1.8, -0.02, -0.08),
@@ -894,19 +897,20 @@ def build(collection=None):
     _parts_pallet(b, M)
     _finished_rack(b, M)
     _dressing(b, M)
-    for ob in b.objs:
-        ob.hide_viewport = False
     return dict(collection=col, objects=b.objs)
 
 
-def _area_light(col, name, location, target, energy, size, color, shape='SQUARE', spread=math.radians(150)):
+def _area_light(col, name, location, target, energy, size, color, shape='SQUARE', spread=math.radians(150),
+                shadow=True, shadow_res=0.01):
+    """Area light aimed at `target`.  shadow_res = coarsest shadow-map texel (m): cheap on CPU/software GL."""
     ld = bpy.data.lights.new(name, 'AREA')
     ld.energy = energy
     ld.color = color
     ld.shape = shape
     ld.size = size
     ld.spread = spread
-    ld.use_shadow = True
+    ld.use_shadow = shadow
+    ld.shadow_maximum_resolution = shadow_res
     ld.shadow_soft_size = size * 0.5
     ob = bpy.data.objects.new(name, ld)
     col.objects.link(ob)
@@ -931,11 +935,11 @@ def build_lighting(scene):
     lights = []
     warm = (1.0, 0.86, 0.72)                                  # ~4500 K
     for i, (x, y) in enumerate(LAMP_GRID):
-        lights.append(_area_light(col, f"env_light_bay_{i}", (x, y, LAMP_Z - 0.03), (x, y, 0), 1500.0, 0.6, warm, 'DISK', math.radians(160)))
+        lights.append(_area_light(col, f"env_light_bay_{i}", (x, y, LAMP_Z - 0.03), (x, y, 0), 1100.0, 0.6, warm, 'DISK', math.radians(160), shadow_res=0.02))
     kx, ky, kz = KEY_LIGHT_POS
-    lights.append(_area_light(col, "env_light_key", (kx, ky, kz), (0.4, 0.0, 1.0), 800.0, 3.5, (1.0, 0.96, 0.92), 'SQUARE', math.radians(120)))
-    lights.append(_area_light(col, "env_light_fill", (-5.5, -7.0, 3.5), (0.5, 0.0, 1.0), 220.0, 6.0, (0.85, 0.9, 1.0), 'SQUARE', math.radians(150)))
-    lights.append(_area_light(col, "env_light_rim", (5.0, 5.0, 3.5), (0.5, 0.0, 1.2), 180.0, 4.0, (0.9, 0.93, 1.0), 'SQUARE', math.radians(150)))
+    lights.append(_area_light(col, "env_light_key", (kx, ky, kz), (0.4, 0.0, 1.0), 550.0, 3.5, (1.0, 0.96, 0.92), 'SQUARE', math.radians(120), shadow_res=0.006))
+    lights.append(_area_light(col, "env_light_fill", (-5.5, -7.0, 3.5), (0.5, 0.0, 1.0), 150.0, 6.0, (0.85, 0.9, 1.0), 'SQUARE', math.radians(150), shadow=False))
+    lights.append(_area_light(col, "env_light_rim", (5.0, 5.0, 3.5), (0.5, 0.0, 1.2), 180.0, 4.0, (0.9, 0.93, 1.0), 'SQUARE', math.radians(150), shadow=False))
 
     # EEVEE Next settings: shadows + screen-space raytracing on, volumetrics off
     ev = scene.eevee
@@ -954,5 +958,6 @@ def build_lighting(scene):
     ev.fast_gi_step_count = 6
     ev.use_volumetric_shadows = False
     ev.light_threshold = 0.02
-    ev.shadow_pool_size = '1024'
+    ev.shadow_pool_size = '512'
+    ev.shadow_resolution_scale = 0.5          # ~2x faster on CPU, no visible loss at 1080p
     return dict(world=world, lights=lights)
