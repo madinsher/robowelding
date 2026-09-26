@@ -8,18 +8,32 @@ RoboDK is running:  python build_station.py
 The script creates a NEW station with:
   * a linear track (7th axis, Y direction) with the ABB IRB 4600-40/2.55 mounted on it (yaw 180 deg),
   * a MIG torch tool (geometry generated as STL, TCP from the bracket/neck/45-deg-head chain),
-  * a 2-axis tilt/rotate positioner (two chained 1-axis mechanisms: tilt about world Y, faceplate rotation),
-  * the DN250 spool (spool.stl exported from Blender, mm, spool-local frame) mounted on the faceplate,
+  * a 2-axis tilt/rotate positioner (two chained 1-axis mechanisms: tilt about world X through (0,0,1350),
+    faceplate rotation about its normal; tilt +90 -> faceplate faces +Y, -90 -> faces -Y),
+  * the DN250 spool (spool.stl exported from Blender, mm, spool-local frame) mounted 30 mm above the faceplate,
   * seam A / seam B as curve objects (points + outward normals) plus "curve follow" machining projects,
   * explicit Cartesian target lists and MoveL programs for both seams (torch normal to the surface,
     10 deg push angle, optional weaving),
   * the storyboard choreography as a main program "DemoCycle" (track / positioner / robot sub-programs,
-    arc on/off macros that deposit a weld-bead trace, view-switch macros for the camera shots),
+    arc on/off macros that deposit a weld-bead trace, view-switch macros for the 12 camera shots),
   * cell dressing (fence, cabinets, hood, hall columns, crane beam) as coloured boxes,
   * camera reference frames for every storyboard shot (optionally opened as 2D simulated cameras).
 
 Units inside this file: mm and degrees (RoboDK convention). The layout numbers mirror
-demo_video/cell/layout.py (metres) - tests/t_robodk_math.py asserts they stay in sync.
+demo_video/cell/layout.py (metres) and the choreography numbers mirror demo_video/cell/animation.py -
+tests/t_robodk_math.py asserts they stay in sync.
+
+Choreography (as in cell/animation.py and post/storyboard.json, 46 s / 1104 frames):
+  1. tilt 0 -> +90 (faceplate faces +Y), track home (-1900) -> +200, robot home -> transit -> above seam A
+  2. laser seam search: +/-60 mm along the seam axis (world Y) 35 mm above the top of seam A
+  3. seam A: torch static at the top of the seam (0, 380, 1487), the faceplate rotates -20 -> +360 deg (380 deg)
+     -> the pipe leg ends up along +X (toward the robot)
+  4. lift, transit pose (torch down, TCP (1350, y, 2050) over the track), track -> +761
+  5. seam B sectors 1-2 at tilt +90 (seam centre (381, 761, 1350), axis X): from 12 o'clock toward -Y, then
+     toward +Y, each -4..+94 deg, radial approach/retract 120 mm, return via 1:30 o'clock retracted 160 mm
+  6. transit pose, positioner flips tilt +90 -> -90 over the top (pipe stays along +X), track -> -761
+  7. sectors 3-4 at tilt -90 (seam centre (381, -761, 1350)), same pattern, retract 150 mm to transit
+  8. robot home, track home (-1900), tilt -90 -> 0
 
 The geometry/choreography maths (seam points, TCP pose, target frames) is pure python (robomath only) and
 lives in the first half of the file so it can be unit-tested without RoboDK (see tests/t_robodk_math.py).
@@ -40,14 +54,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 GEN_DIR = os.path.join(HERE, "generated")          # STL of the torch, generated macros
 SPOOL_STL = os.path.join(HERE, "spool.stl")
 
-# positioner (pedestal centred at the origin)
-POS_PEDESTAL_FOOTPRINT = (1000.0, 900.0, 750.0)
-POS_TILT_AXIS_Z = 1350.0          # tilt axis = world Y through (0, 0, 1350)
-POS_TILT_HALF_WIDTH = 620.0
+# positioner (pedestal centred at the origin). The TILT AXIS IS PARALLEL TO THE TRACK (world X):
+# tilt = 0 -> faceplate faces +Z (loading), tilt = +90 -> faces +Y (centre (0, 250, 1350)), tilt = -90 -> faces -Y.
+POS_PEDESTAL_FOOTPRINT = (900.0, 1000.0, 750.0)   # x, y, height of the pedestal box
+POS_TILT_AXIS_Z = 1350.0          # tilt axis = world X through (0, 0, 1350)
+POS_TILT_HALF_WIDTH = 620.0       # trunnion bearings at x = +/-620
+POS_TOWER_X = POS_TILT_HALF_WIDTH + 60.0   # bearing towers at x = +/-680
 POS_FACEPLATE_OFFSET = 250.0      # faceplate centre above the tilt axis (tilt = 0)
 POS_FACEPLATE_RADIUS = 320.0
-POS_FIXTURE_THICK = 30.0          # adapter ring between faceplate and spool flange
-TILT_LIMITS = (-10.0, 135.0)
+POS_FIXTURE_THICK = 30.0          # adapter ring between faceplate and spool flange (spool 30 mm above the faceplate)
+TILT_LIMITS = (-120.0, 120.0)     # the 180 deg index is tilt +90 -> -90 over the top
 ROT_LIMITS = (-720.0, 720.0)
 
 # spool (DN250 pipe + LR elbow + WN flange); spool-local frame: flange back face on z=0, axis +Z,
@@ -65,9 +81,9 @@ TRACK_X = 2000.0
 TRACK_Y_MIN, TRACK_Y_MAX = -2000.0, 2000.0
 TRACK_TOP_Z = 450.0               # robot base plate height (carriage top)
 ROBOT_YAW_DEG = 180.0             # base rotated so the arm faces the positioner (-X world)
-ROBOT_HOME_Y = -1200.0
-# home joints (deg) = cell/layout.py ROBOT_Q_HOME (rad) converted; ABB controller convention
-ROBOT_Q_HOME = [0.0, -20.0, 31.5, 0.0, 77.3, 0.0]
+ROBOT_HOME_Y = -1900.0
+# home joints (deg) = cell/layout.py ROBOT_Q_HOME (rad) converted: upper arm back, forearm up, torch vertical
+ROBOT_Q_HOME = [0.0, -31.5, 54.4, 0.0, 65.9, 0.0]
 ROBOT_LIBRARY_GLOBS = ["*IRB*4600*40*2.55*.robot", "*IRB*4600*2.55*.robot", "*IRB*4600*.robot"]
 
 # torch (tool frame on the flange): bracket + neck along +Z, 45 deg bend toward +X, head, stickout
@@ -87,55 +103,67 @@ LOAD_OPENING = dict(side="-X", width=2400.0)
 CONTROLLER_CABINET = dict(pos=(3600.0, 2400.0, 0.0), size=(700.0, 550.0, 1400.0))
 WELD_POWER_SOURCE = dict(pos=(3400.0, 1200.0, 0.0), size=(450.0, 700.0, 950.0))
 WIRE_DRUM = dict(pos=(3400.0, 350.0, 0.0), radius=260.0, height=800.0)
-TORCH_CLEANER = dict(pos=(2000.0, -2550.0, 0.0), height=1050.0)
-FUME_HOOD = dict(pos=(300.0, 0.0, 2700.0), size=(1600.0, 1600.0, 350.0))
+TORCH_CLEANER = dict(pos=(2000.0, -2550.0, 0.0), height=950.0)
+FUME_HOOD = dict(pos=(300.0, 0.0, 3050.0), size=(1600.0, 1600.0, 350.0))   # above the pipe sweep
 PARTS_PALLET = dict(pos=(-1500.0, 2200.0, 0.0))
 FINISHED_RACK = dict(pos=(-1500.0, -2200.0, 0.0))
 HALL_SIZE = (36000.0, 30000.0, 9000.0)
 COLUMN_SPACING = 6000.0
 
-# choreography (same as cell/animation.py)
-ROT_A0 = 70.0                     # faceplate angle at the start of seam A
-ROT_A1 = ROT_A0 + 380.0           # 450 -> pipe along +Y
-ROT_B2 = ROT_A1 - 180.0           # 270 -> pipe along -Y
-DY_B = 1100.0                     # lateral track offset for the seam-B sectors (diagonal approach)
-TRACK_B1 = SEAM_B_CENTER[0] + DY_B
-TRACK_B2 = -(SEAM_B_CENTER[0] + DY_B)
-SECTOR_DEG = 92.0                 # each seam-B sector: 12 o'clock -> 3 (or 9) o'clock with 2 deg overlap
+# choreography (same as cell/animation.py; metres there)
+ROT_A0 = -20.0                    # faceplate angle at the start of seam A
+ROT_A1 = ROT_A0 + 380.0           # = 360 -> pipe leg along +X (toward the robot) for the seam-B sectors
+ROT_A_MID = ROT_A0 + 106.0        # camera switch C3b -> C4 during seam A (frame 301 of 241..456)
+TILT_B1, TILT_B2 = 90.0, -90.0    # seam B sectors 1-2 / 3-4 (180 deg index = tilt flip over the top)
+SEAM_B_Y = POS_FACEPLATE_OFFSET + POS_FIXTURE_THICK + SEAM_B_CENTER[2]   # |y| of the seam-B centre at tilt +/-90 (761)
+TRACK_A = 200.0                   # track station for seam A (arm slightly ahead of the seam plane)
+TRACK_B1, TRACK_B2 = SEAM_B_Y, -SEAM_B_Y                                 # track stations for the sectors
+TRANSIT_TCP = (1350.0, 2050.0)    # (x, z) of the parked torch tip, torch down, over the track (y = track station)
+SECTOR_A0, SECTOR_A1 = -4.0, 94.0 # each seam-B sector from 12 o'clock: -4 .. +94 deg (overlaps at 12, 3, 9 o'clock)
+SECTOR_DEG = SECTOR_A1 - SECTOR_A0
 PUSH_ANGLE_DEG = 10.0
-LIFT_APPROACH = 150.0             # mm above the seam for joint approaches
-LIFT_SECTOR = 60.0                # mm lift between sectors
-SCAN_HEIGHT = 35.0                # laser seam search height
-SCAN_HALF = 60.0                  # laser sweep +/- across the seam (along X)
+LIFT_APPROACH = 120.0             # radial approach / retract at the sector starts/ends
+LIFT_PARK = 150.0                 # lift after seam A and after sectors 2/4 (before the transit pose)
+VIA_RETRACT = 160.0               # return move between sectors: via 1:30 o'clock retracted this much
+VIA_ANGLE = 45.0
+SCAN_HEIGHT = 35.0                # laser seam search height above the seam
+SCAN_HALF = 60.0                  # laser sweep +/- across the joint (along the seam axis = world Y at tilt 90)
 
 # process speeds
 WELD_SPEED_MMS = 10.0             # welding travel speed (8..12 mm/s)
 AIR_SPEED_MMS = 500.0             # linear air moves
 AIR_JOINT_DEGS = 60.0             # joint moves
 TRACK_SPEED_MMS = 500.0
-POS_INDEX_DEGS = 20.0             # positioner indexing speed
+POS_INDEX_DEGS = 20.0             # positioner tilt / indexing speed
 POS_WELD_DEGS = 10.0              # faceplate speed during seam A (10 deg/s = 24 mm/s at R136; use 4.2 for 10 mm/s)
 WEAVE_AMPL_MM = 0.0               # optional weaving amplitude along the seam axis (0 = off)
 WEAVE_FREQ_HZ = 2.5
-SECTOR_POINTS = 24                # MoveL targets per 92 deg sector (without weaving)
+SECTOR_POINTS = 24                # MoveL targets per 98 deg sector (without weaving)
 CURVE_POINTS = 90                 # points per seam curve (AddCurve)
 
-# camera shots (name, camera position (mm), aim point (mm), lens mm) - start positions of the Blender shots
+# camera shots = cell/animation.py SHOTS start poses: (name, first frame, last frame, camera (mm), aim (mm), lens mm)
 SHOTS = [
-    ("C1_wide", (-3800, -6200, 2500), (900, 0, 1300), 32),
-    ("C2_setup", (3600, -3800, 2300), (700, -300, 1350), 35),
-    ("C3_closeA", (1450, -1150, 1850), (400, 0, 1470), 60),
-    ("C4_midA", (1900, 1700, 1550), (550, 0, 1450), 45),
-    ("C5_reposition", (2900, -2300, 2500), (800, 200, 1450), 35),
-    ("C6_closeB1", (1550, -950, 1950), (740, 380, 1450), 55),
-    ("C7_index", (-2900, 2100, 2500), (700, 0, 1250), 32),
-    ("C8_closeB2", (1550, 950, 1950), (740, -380, 1450), 55),
-    ("C9_final", (4700, -5300, 2800), (1000, -300, 1200), 32),
+    ("C1_wide", 1, 96, (-4600, -7200, 4000), (900, 0, 1100), 28),
+    ("C2_setup", 97, 192, (-200, 3100, 2500), (600, 200, 1350), 30),
+    ("C3a_laser", 193, 240, (750, 1550, 1950), (0, 400, 1470), 85),
+    ("C3b_closeA", 241, 300, (900, 1350, 2000), (0, 400, 1470), 60),
+    ("C4_midA", 301, 456, (900, 2000, 2900), (50, 420, 1450), 50),
+    ("C5_reposition", 457, 540, (4400, -3200, 3400), (1400, 300, 1000), 30),
+    ("C6a_closeB1", 541, 648, (1300, -550, 2050), (420, 760, 1420), 42),
+    ("C6b_closeB1", 649, 708, (1300, 2050, 2050), (420, 760, 1420), 42),
+    ("C7_index", 709, 810, (-3400, -1800, 2400), (400, 0, 1400), 32),
+    ("C8a_closeB2", 811, 888, (1300, -2050, 2050), (420, -760, 1420), 42),
+    ("C8b_closeB2", 889, 930, (1300, 550, 2050), (420, -760, 1420), 42),
+    ("C9_final", 931, 1104, (5400, -6200, 4000), (800, -200, 1100), 30),
 ]
 OPEN_2D_CAMERAS = False           # True: also open a simulated 2D camera window for every shot
 VIEW_OPENGL = True                # 3D view convention for setViewPose (camera looks along -Z, Y up); see README
 SAVE_RDK = True                   # save <station>.rdk next to this script when done
 STATION_NAME = "PipeSpool_WeldCell"
+# BuildMechanism geometry convention: False = the shape objects are taken as they sit in the station (world mm,
+# mechanism at joints_build) and `base` only places the joint axis; True = the shapes are expected w.r.t. the
+# mechanism base frame (they are pre-transformed by invH(base)). Flip it if the built positioner/track looks rotated.
+MECH_GEOMETRY_IN_BASE_FRAME = False
 
 # optional library mechanisms instead of the built ones (glob patterns inside PATH_LIBRARY, "" = build)
 TRACK_LIBRARY_GLOB = ""
@@ -170,14 +198,17 @@ def pose_from_axes(x, y, z, p):
 
 
 def spool_pose(tilt_deg, rot_deg):
-    """Pose of the spool-local frame in the world for given positioner joints (mm)."""
-    return (transl(0, 0, POS_TILT_AXIS_Z) * roty(tilt_deg * D2R) * transl(0, 0, POS_FACEPLATE_OFFSET)
+    """Pose of the spool-local frame in the world for given positioner joints (mm).
+    Tilt rotates about world X through (0,0,POS_TILT_AXIS_Z) with the Blender sign convention
+    (cell/positioner.set_tilt: +90 -> faceplate faces +Y), i.e. rotx(-tilt)."""
+    return (transl(0, 0, POS_TILT_AXIS_Z) * rotx(-tilt_deg * D2R) * transl(0, 0, POS_FACEPLATE_OFFSET)
             * rotz(rot_deg * D2R) * transl(0, 0, POS_FIXTURE_THICK))
 
 
 def tilt_base_pose():
-    """Base pose of the tilt mechanism: rotation about world Y through (0,0,POS_TILT_AXIS_Z)."""
-    return transl(0, 0, POS_TILT_AXIS_Z) * rotx(-90 * D2R)      # mechanism Z -> world +Y
+    """Base pose of the tilt mechanism (1R about its Z): Z = world -X through (0,0,POS_TILT_AXIS_Z), so that a
+    positive joint value is a rotation of -joint about world +X (= spool_pose / positioner.set_tilt)."""
+    return transl(0, 0, POS_TILT_AXIS_Z) * roty(-90 * D2R)      # mechanism Z -> world -X, mechanism X -> world +Z
 
 
 def rot_base_pose_world():
@@ -261,71 +292,102 @@ def lifted(T, dz):
     return transl(0, 0, dz) * T
 
 
-def seam_a_static_target(track_y=0.0):
-    """Torch pose for seam A: 12 o'clock of seam A at tilt 90 / rot ROT_A0; the part rotates under the torch."""
-    sf = seam_frame_world("A", spool_pose(90.0, ROT_A0))
+def radial(T, n, d):
+    """Same orientation, position moved by d along the (outward) surface normal n."""
+    n = rm.normalize3(n)
+    return transl(n[0] * d, n[1] * d, n[2] * d) * T
+
+
+def transit_target(track_y):
+    """Parked torch: tip at TRANSIT_TCP over the track (y = track station), pointing straight down, body leaning +X.
+    Outside the sweep of the part for every track / positioner motion."""
+    p = [TRANSIT_TCP[0], float(track_y), TRANSIT_TCP[1]]
+    return torch_target(p, [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [1.0, 0.0, 0.9], 0.0)
+
+
+def seam_a_static_target(track_y=TRACK_A):
+    """Torch pose for seam A: top (12 o'clock) of seam A at tilt TILT_B1 / rot ROT_A0; the part rotates under
+    the torch about the faceplate axis (world +Y), the torch travels the opposite way relative to the part."""
+    sf = seam_frame_world("A", spool_pose(TILT_B1, ROT_A0))
     p, n, t = seam_point(sf, top_angle(sf))
-    # the surface moves with omega x r; the torch travels the opposite way relative to the part -> -t
+    # the surface moves with omega x r = axis x r = t; the torch travels the opposite way relative to the part -> -t
     return torch_target(p, n, rm.mult3(t, -1.0), robot_lean(p, track_y))
 
 
-def seam_a_movel_targets(n_pts=4 * SECTOR_POINTS, track_y=0.0):
-    """Alternative: the robot drives the torch around the full seam A circle while the part is static."""
-    sf = seam_frame_world("A", spool_pose(90.0, ROT_A0))
+def seam_a_movel_targets(n_pts=4 * SECTOR_POINTS, track_y=TRACK_A):
+    """Alternative: the robot drives the torch around the full seam A circle while the part is static.
+    Returns (poses, normals)."""
+    sf = seam_frame_world("A", spool_pose(TILT_B1, ROT_A0))
     a0 = top_angle(sf)
-    out = []
+    poses, normals = [], []
     for k in range(n_pts + 1):
         p, n, t = seam_point(sf, a0 + 360.0 * k / n_pts)
-        out.append(torch_target(p, n, t, robot_lean(p, track_y)))
-    return out
+        poses.append(torch_target(p, n, t, robot_lean(p, track_y)))
+        normals.append(n)
+    return poses, normals
 
 
-def laser_scan_targets(n_pts=7):
-    """Laser seam search: sweep across seam A (along world X) SCAN_HEIGHT above the 12 o'clock point."""
-    TA = seam_a_static_target()
+def laser_scan_targets(n_pts=7, track_y=TRACK_A):
+    """Laser seam search: sweep +/-SCAN_HALF along the seam-A axis (world Y at tilt 90) SCAN_HEIGHT above the
+    12 o'clock point, torch orientation as for the weld."""
+    sf = seam_frame_world("A", spool_pose(TILT_B1, ROT_A0))
+    ax = sf[1]
+    TA = seam_a_static_target(track_y)
     out = []
     for k in range(n_pts):
         s = k / (n_pts - 1.0)
-        out.append(transl(-SCAN_HALF + 2 * SCAN_HALF * s, 0, SCAN_HEIGHT) * TA)
+        x = -SCAN_HALF + 2 * SCAN_HALF * s
+        out.append(transl(ax[0] * x, ax[1] * x, ax[2] * x + SCAN_HEIGHT) * TA)
     return out
 
 
-def sector_targets(rot_deg, track_y, toward_plus_x, n_pts=None, weave=WEAVE_AMPL_MM):
-    """Seam-B sector targets (list of Mat) from 12 o'clock over SECTOR_DEG toward +X (robot side) or -X."""
-    sf = seam_frame_world("B", spool_pose(90.0, rot_deg))
+def sector_targets(tilt_deg, track_y, toward_plus_y, n_pts=None, weave=WEAVE_AMPL_MM):
+    """Seam-B sector at tilt +/-90 with the pipe along +X (rot = ROT_A1): targets from 12 o'clock (SECTOR_A0)
+    over SECTOR_DEG toward -Y or +Y. Returns (poses, outward normals, via pose): the via pose is the 1:30 o'clock
+    point retracted VIA_RETRACT along its normal (push angle 0) used for the return move between sectors."""
+    sf = seam_frame_world("B", spool_pose(tilt_deg, ROT_A1))
     a_top = top_angle(sf)
     p5, _, _ = seam_point(sf, a_top + 5.0)
-    sgn = 1.0 if ((p5[0] > sf[0][0]) == toward_plus_x) else -1.0
+    sgn = 1.0 if ((p5[1] > sf[0][1]) == toward_plus_y) else -1.0
     arc_len = SEAM_RADIUS * SECTOR_DEG * D2R
     if n_pts is None:
         n_pts = SECTOR_POINTS
         if weave > 0:        # at least 4 targets per weave period
             n_pts = max(n_pts, int(arc_len / (WELD_SPEED_MMS / WEAVE_FREQ_HZ / 4.0)) + 1)
-    out = []
+    poses, normals = [], []
     for k in range(n_pts + 1):
         s = k / float(n_pts)
-        p, n, t = seam_point(sf, a_top + sgn * SECTOR_DEG * s)
+        p, n, t = seam_point(sf, a_top + sgn * (SECTOR_A0 + SECTOR_DEG * s))
         if weave > 0:
             w = weave * math.sin(2 * math.pi * WEAVE_FREQ_HZ * (s * arc_len / WELD_SPEED_MMS))
             p = rm.add3(p, rm.mult3(sf[1], w))
-        out.append(torch_target(p, n, rm.mult3(t, sgn), robot_lean(p, track_y)))
-    return out
+        poses.append(torch_target(p, n, rm.mult3(t, sgn), robot_lean(p, track_y)))
+        normals.append(n)
+    pv, nv, tv = seam_point(sf, a_top + sgn * VIA_ANGLE)
+    via = radial(torch_target(pv, nv, rm.mult3(tv, sgn), robot_lean(pv, track_y), 0.0), nv, VIA_RETRACT)
+    return poses, normals, via
 
 
 def choreography():
     """All Cartesian target poses of the demo (world/cell frame, mm) grouped per program."""
     TA = seam_a_static_target()
-    scan = laser_scan_targets()
+    movel, movel_n = seam_a_movel_targets()
     ch = dict(
         weldA=TA,
-        approachA=lifted(TA, LIFT_APPROACH),
-        scan=scan,
-        weldA_movel=seam_a_movel_targets(),
-        sector1=sector_targets(ROT_A1, TRACK_B1, True),
-        sector2=sector_targets(ROT_A1, TRACK_B1, False),
-        sector3=sector_targets(ROT_B2, TRACK_B2, True),
-        sector4=sector_targets(ROT_B2, TRACK_B2, False),
+        approachA=lifted(TA, LIFT_PARK),
+        scan=laser_scan_targets(),
+        weldA_movel=movel,
+        weldA_movel_n=movel_n,
+        transit=transit_target(TRACK_A),
+        transitB1=transit_target(TRACK_B1),
+        transitB2=transit_target(TRACK_B2),
     )
+    for key, tilt, ty, plus_y in (("sector1", TILT_B1, TRACK_B1, False), ("sector2", TILT_B1, TRACK_B1, True),
+                                  ("sector3", TILT_B2, TRACK_B2, False), ("sector4", TILT_B2, TRACK_B2, True)):
+        poses, normals, via = sector_targets(tilt, ty, plus_y)
+        ch[key] = poses
+        ch[key + "_n"] = normals
+        ch[key + "_via"] = via
     return ch
 
 
@@ -398,6 +460,11 @@ def cylinder_tris(p0, p1, r, n=24, r1=None):
     return tris
 
 
+def tris_transform(tris, T):
+    """Triangles moved by pose T."""
+    return [[xform_point(T, p) for p in tri] for tri in tris]
+
+
 def torch_mesh_triangles():
     """MIG torch geometry in the flange (tool0) frame, mm: bracket, neck, 45-deg bend, head, gas nozzle, tip."""
     tris = []
@@ -459,7 +526,8 @@ RDK = Robolink()
 RDK.Spray_SetState(SPRAY_OFF)
 '''
 
-VIEW_SRC = '''# {name}: move the 3D view to storyboard shot {shot}. Generated by build_station.py
+VIEW_SRC = '''# {name}: move the 3D view to storyboard shot {shot} (frames {f0}-{f1}; camera {cam} mm -> aim {aim} mm, lens {lens} mm).
+# Generated by build_station.py
 from robodk.robolink import *
 from robodk.robomath import *
 RDK = Robolink()
@@ -468,7 +536,8 @@ RDK.setViewPose(Mat({rows}))
 
 
 def write_macros():
-    """Write ArcOn/ArcOff and one View_* macro per storyboard shot into GEN_DIR; return {name: path}."""
+    """Write ArcOn/ArcOff and one View_* macro per storyboard shot into GEN_DIR (stale View_* files are removed);
+    return {name: path}."""
     os.makedirs(GEN_DIR, exist_ok=True)
     files = {}
     for name, src in (("ArcOn", ARC_ON_SRC), ("ArcOff", ARC_OFF_SRC)):
@@ -476,13 +545,17 @@ def write_macros():
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(src)
         files[name] = path
-    for shot, cam, aim, lens in SHOTS:
+    for shot, f0, f1, cam, aim, lens in SHOTS:
         name = "View_" + shot
         rows = [[round(v, 6) for v in row] for row in view_pose(cam, aim).rows]
         path = os.path.join(GEN_DIR, name + ".py")
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write(VIEW_SRC.format(name=name, shot=shot, rows=rows))
+            fh.write(VIEW_SRC.format(name=name, shot=shot, f0=f0, f1=f1, cam=list(cam), aim=list(aim), lens=lens,
+                                     rows=rows))
         files[name] = path
+    for old in glob.glob(os.path.join(GEN_DIR, "View_*.py")):
+        if os.path.basename(old)[:-3] not in files:
+            os.remove(old)
     return files
 
 
@@ -517,6 +590,14 @@ def add_shape_object(RDK, name, shapes, parent=0):
     item = RDK.AddShape(payload, parent)
     item.setName(name)
     return item
+
+
+def mech_shapes(shapes, base):
+    """Shapes of a mechanism link, built in world mm; see MECH_GEOMETRY_IN_BASE_FRAME."""
+    if not MECH_GEOMETRY_IN_BASE_FRAME:
+        return shapes
+    Ti = invH(base)
+    return [(tris_transform(tris, Ti), color) for tris, color in shapes]
 
 
 def base_frame_of(RDK, mech):
@@ -558,6 +639,13 @@ def find_library_file(RDK, patterns):
     return None, lib
 
 
+def set_state(cell, track_y, tilt_deg, rot_deg):
+    """Put the external axes in a given state (used while solving targets)."""
+    cell.track.setJoints([track_y])
+    cell.tilt.setJoints([tilt_deg])
+    cell.rot.setJoints([rot_deg])
+
+
 # ---------------------------------------------------------------- track + robot
 def add_track(RDK, cell):
     """Linear track (7th axis) along world Y at x = TRACK_X: 1-axis translation mechanism."""
@@ -568,20 +656,21 @@ def add_track(RDK, cell):
             base_frame_of(RDK, track).setPose(track_base_pose())
             cell.track = track
             return track
+    base = track_base_pose()
     length = TRACK_Y_MAX - TRACK_Y_MIN + 1200.0
-    bed = add_shape_object(RDK, "Track bed", [
+    bed = add_shape_object(RDK, "Track bed", mech_shapes([
         (box_tris((TRACK_X, 0, 110), (900, length, 220)), [0.17, 0.18, 0.21, 1]),
         (box_tris((TRACK_X - 300, 0, 245), (60, length - 100, 50)), [0.75, 0.75, 0.78, 1]),
         (box_tris((TRACK_X + 300, 0, 245), (60, length - 100, 50)), [0.75, 0.75, 0.78, 1]),
         (box_tris((TRACK_X - 420, 0, 240), (40, length - 200, 40)), [0.1, 0.1, 0.1, 1]),
-        (box_tris((TRACK_X + 560, 0, 60), (140, length - 300, 120)), [0.2, 0.2, 0.2, 1]),   # cable chain trough
-    ])
-    carriage = add_shape_object(RDK, "Track carriage", [
-        (box_tris((TRACK_X, 0, 335), (900, 900, 230)), [0.22, 0.24, 0.28, 1]),
-        (box_tris((TRACK_X, 0, 452), (700, 700, 6)), [0.8, 0.8, 0.82, 1]),
-    ])
+        (box_tris((TRACK_X + 620, 0, 80), (220, length - 300, 160)), [0.2, 0.2, 0.2, 1]),   # cable chain trough
+    ], base))
+    carriage = add_shape_object(RDK, "Track carriage", mech_shapes([                           # at joint 0 (y = 0)
+        (box_tris((TRACK_X, 0, 270 + (TRACK_TOP_Z - 270) / 2), (860, 1050, TRACK_TOP_Z - 270)), [0.22, 0.24, 0.28, 1]),
+        (box_tris((TRACK_X, 0, TRACK_TOP_Z - 15), (780, 780, 30)), [0.8, 0.8, 0.82, 1]),
+    ], base))
     track = RDK.BuildMechanism(rl.MAKE_ROBOT_1T, [bed, carriage], [], [0.0], [ROBOT_HOME_Y], [1],
-                               [TRACK_Y_MIN], [TRACK_Y_MAX], track_base_pose(), eye(4), "Linear track Y")
+                               [TRACK_Y_MIN], [TRACK_Y_MAX], base, eye(4), "Linear track Y")
     if not track.Valid():
         raise RuntimeError("BuildMechanism failed for the linear track")
     track.setJoints([ROBOT_HOME_Y])
@@ -631,9 +720,69 @@ def add_torch(RDK, cell):
 
 
 # ---------------------------------------------------------------- positioner + spool
+def positioner_static_shapes():
+    """Pedestal, bed, bearing towers (x = +/-POS_TOWER_X), caps and the tilt drive (world mm), mirroring
+    cell/positioner.py."""
+    zt = POS_TILT_AXIS_Z
+    hw = POS_TILT_HALF_WIDTH
+    tx = POS_TOWER_X
+    fx, fy, fz = POS_PEDESTAL_FOOTPRINT
+    tw = 260.0                        # tower thickness (x)
+    z_bed = 330.0                     # top of the welded bed
+    bed_x = 2 * tx + tw
+    blue = [0.15, 0.33, 0.56, 1]
+    dark = [0.15, 0.15, 0.16, 1]
+    grey = [0.2, 0.21, 0.23, 1]
+    yellow = [0.95, 0.75, 0.05, 1]
+    gx = tx + 160 + 70                # tilt gearbox centre x (right side)
+    zm = zt - 170 - 160               # tilt motor centre z
+    shapes = [
+        (box_tris((0, 0, 15), (2 * hw + 500, fy + 250, 30)), dark),                        # base plate
+        (box_tris((0, 0, (z_bed + 30) / 2), (bed_x, fy, z_bed - 30)), blue),               # welded bed
+        (box_tris((0, 0, z_bed + fz / 2), (fx, fy, fz)), blue),                             # pedestal
+        (box_tris((0, 0, 90), (bed_x + 20, fy + 20, 50)), yellow),                          # hazard stripe
+    ]
+    for s in (-1, 1):
+        shapes.append((box_tris((s * tx, 0, (zt + z_bed) / 2), (tw, 420, zt - z_bed)), blue))            # tower
+        shapes.append((cylinder_tris((s * tx - 133, 0, zt), (s * tx + 133, 0, zt), 210, 48), blue))     # tower head
+        shapes.append((cylinder_tris((s * (tx + 60) - 100, 0, zt), (s * (tx + 60) + 100, 0, zt), 150), blue))  # cap
+    xf = -(tx + 160)
+    shapes.append((cylinder_tris((xf - 20, 0, zt), (xf, 0, zt), 100, 32), dark))                       # end cover (left)
+    shapes.append((cylinder_tris((tx + 160, 0, zt), (tx + 160 + 30, 0, zt), 115), dark))               # drive adapter
+    shapes.append((box_tris((gx, 0, zt), (140, 300, 340)), blue))                                      # tilt gearbox
+    shapes.append((cylinder_tris((gx, 0, zt - 170 - 20), (gx, 0, zt - 170), 100), dark))              # motor flange
+    shapes.append((cylinder_tris((gx, 0, zm - 160), (gx, 0, zm + 160), 85), grey))                      # tilt motor
+    shapes.append((cylinder_tris((gx, 0, zm - 160 - 40), (gx, 0, zm - 160), 92), dark))               # fan cover
+    shapes.append((box_tris((gx, 115, zm + 40), (90, 60, 80)), grey))                                   # terminal box
+    return shapes
+
+
+def positioner_cradle_shapes():
+    """U-cradle (tilt link at tilt = 0, world mm): trunnion hubs, arms, cross beam, rotary drive."""
+    zt = POS_TILT_AXIS_Z
+    hw = POS_TILT_HALF_WIDTH
+    zf = zt + POS_FACEPLATE_OFFSET
+    blue = [0.15, 0.33, 0.56, 1]
+    dark = [0.15, 0.15, 0.16, 1]
+    grey = [0.2, 0.21, 0.23, 1]
+    steel = [0.7, 0.7, 0.72, 1]
+    shapes = []
+    for s in (-1, 1):
+        hx = s * (hw - 80)
+        shapes.append((cylinder_tris((hx - 100, 0, zt), (hx + 100, 0, zt), 140), steel))                       # hub
+        shapes.append((box_tris((s * (hw - 140), 0, zt + (POS_FACEPLATE_OFFSET - 60) / 2),
+                                (120, 220, POS_FACEPLATE_OFFSET + 120)), blue))                                  # arm
+    shapes.append((box_tris((0, 0, zf - 140), (2 * hw - 200, 260, 120)), blue))                                 # cross beam
+    shapes.append((cylinder_tris((0, 0, zf - 140), (0, 0, zf - 60), 200), grey))                                # rotary drive
+    shapes.append((cylinder_tris((280, -360, zf - 140), (280, -80, zf - 140), 75), grey))                       # rotary motor
+    shapes.append((cylinder_tris((280, -390, zf - 140), (280, -360, zf - 140), 80), dark))                      # motor fan
+    return shapes
+
+
 def add_positioner(RDK, cell):
-    """2-axis tilt/rotate positioner as two chained 1-axis rotation mechanisms (tilt about world Y through
-    (0,0,POS_TILT_AXIS_Z); faceplate POS_FACEPLATE_OFFSET above the tilt axis rotating about its normal)."""
+    """2-axis tilt/rotate positioner as two chained 1-axis rotation mechanisms: tilt about world X through
+    (0,0,POS_TILT_AXIS_Z) (+90 -> faceplate faces +Y), faceplate POS_FACEPLATE_OFFSET above the tilt axis rotating
+    about its normal."""
     if POSITIONER_LIBRARY_GLOB:
         path, _ = find_library_file(RDK, [POSITIONER_LIBRARY_GLOB])
         if path:
@@ -642,54 +791,40 @@ def add_positioner(RDK, cell):
             cell.tilt = cell.rot = pos
             return pos
     zt = POS_TILT_AXIS_Z
-    hw = POS_TILT_HALF_WIDTH
-    fx, fy, fz = POS_PEDESTAL_FOOTPRINT
-    blue = [0.12, 0.31, 0.55, 1]
     dark = [0.15, 0.15, 0.16, 1]
     steel = [0.7, 0.7, 0.72, 1]
+    cast = [0.45, 0.46, 0.48, 1]
     yellow = [0.95, 0.75, 0.05, 1]
-    pedestal = add_shape_object(RDK, "Positioner pedestal", [
-        (box_tris((0, 0, 15), (fx + 250, 2 * hw + 500, 30)), dark),
-        (box_tris((0, 0, fz / 2 + 30), (fx, fy, fz)), blue),
-        (box_tris((0, 0, 90), (fx + 20, fy + 20, 50)), yellow),
-        (box_tris((0, -(hw + 60), (zt - 100) / 2 + 30), (500, 260, zt - 100)), blue),
-        (box_tris((0, hw + 60, (zt - 100) / 2 + 30), (500, 260, zt - 100)), blue),
-        (cylinder_tris((0, -(hw + 60) - 140, zt), (0, -(hw + 60) + 140, zt), 190), dark),
-        (cylinder_tris((0, hw + 60 - 140, zt), (0, hw + 60 + 140, zt), 190), dark),
-        (cylinder_tris((0, hw + 60 + 320 - 175, zt), (0, hw + 60 + 320 + 175, zt), 110), dark),   # tilt motor
-        (box_tris((0, hw + 60 + 200, zt), (300, 140, 300)), blue),
-    ])
-    cradle = add_shape_object(RDK, "Positioner cradle", [
-        (cylinder_tris((0, -(hw - 80) - 100, zt), (0, -(hw - 80) + 100, zt), 140), steel),
-        (cylinder_tris((0, hw - 80 - 100, zt), (0, hw - 80 + 100, zt), 140), steel),
-        (box_tris((0, -(hw - 140), zt + (POS_FACEPLATE_OFFSET - 60) / 2), (220, 120, POS_FACEPLATE_OFFSET + 120)), blue),
-        (box_tris((0, hw - 140, zt + (POS_FACEPLATE_OFFSET - 60) / 2), (220, 120, POS_FACEPLATE_OFFSET + 120)), blue),
-        (box_tris((0, 0, zt + POS_FACEPLATE_OFFSET - 140), (260, 2 * hw - 200, 120)), blue),
-        (cylinder_tris((0, 0, zt + POS_FACEPLATE_OFFSET - 140), (0, 0, zt + POS_FACEPLATE_OFFSET - 60), 200), dark),
-        (cylinder_tris((-360, 280, zt + POS_FACEPLATE_OFFSET - 100), (-80, 280, zt + POS_FACEPLATE_OFFSET - 100), 75), dark),
-    ])
+    tbase = tilt_base_pose()
+    pedestal = add_shape_object(RDK, "Positioner pedestal", mech_shapes(positioner_static_shapes(), tbase))
+    cradle = add_shape_object(RDK, "Positioner cradle", mech_shapes(positioner_cradle_shapes(), tbase))
     tilt = RDK.BuildMechanism(rl.MAKE_ROBOT_1R, [pedestal, cradle], [], [0.0], [0.0], [1],
-                              [TILT_LIMITS[0]], [TILT_LIMITS[1]], tilt_base_pose(), eye(4), "Positioner tilt")
+                              [TILT_LIMITS[0]], [TILT_LIMITS[1]], tbase, eye(4), "Positioner tilt")
     if not tilt.Valid():
         raise RuntimeError("BuildMechanism failed for the positioner tilt axis")
     zf = zt + POS_FACEPLATE_OFFSET
     R = POS_FACEPLATE_RADIUS
-    housing = add_shape_object(RDK, "Faceplate drive", [
+    rbase = rot_base_pose_world()
+    housing = add_shape_object(RDK, "Faceplate drive", mech_shapes([
         (cylinder_tris((0, 0, zf - 62), (0, 0, zf - 58), 210), dark),
-    ])
+    ], rbase))
     plate_shapes = [
-        (cylinder_tris((0, 0, zf - 60), (0, 0, zf), R, 48), steel),
-        (cylinder_tris((0, 0, zf), (0, 0, zf + POS_FIXTURE_THICK), 215, 48), yellow),
+        (cylinder_tris((0, 0, zf - 60), (0, 0, zf), R, 48), cast),
+        (cylinder_tris((0, 0, zf), (0, 0, zf + POS_FIXTURE_THICK), 215, 48), yellow),      # fixture adapter ring
     ]
-    for k in range(4):
+    for k in range(4):                                                                       # radial T-slots
         plate_shapes.append((box_tris((0, 0, zf - 1), (2 * R - 60, 16, 4), rotz(k * math.pi / 4)), dark))
-    faceplate = add_shape_object(RDK, "Faceplate", plate_shapes)
+    for k in range(6):                                                                       # flange bolts
+        a = 2 * math.pi * (2 * k + 0.5) / 12
+        x, y = 177.5 * math.cos(a), 177.5 * math.sin(a)
+        plate_shapes.append((cylinder_tris((x, y, zf + POS_FIXTURE_THICK + 28), (x, y, zf + POS_FIXTURE_THICK + 44), 8, 6), steel))
+    faceplate = add_shape_object(RDK, "Faceplate", mech_shapes(plate_shapes, rbase))
     rot = RDK.BuildMechanism(rl.MAKE_ROBOT_1R, [housing, faceplate], [], [0.0], [ROT_A0], [1],
-                             [ROT_LIMITS[0]], [ROT_LIMITS[1]], rot_base_pose_world(), eye(4), "Positioner faceplate")
+                             [ROT_LIMITS[0]], [ROT_LIMITS[1]], rbase, eye(4), "Positioner faceplate")
     if not rot.Valid():
         raise RuntimeError("BuildMechanism failed for the positioner faceplate axis")
     # chain: faceplate mechanism rides on the tilt flange
-    mount_on_flange(RDK, rot, tilt, 1, invH(tilt_base_pose()) * rot_base_pose_world())
+    mount_on_flange(RDK, rot, tilt, 1, invH(tbase) * rbase)
     tilt.setJoints([0.0])
     rot.setJoints([ROT_A0])
     cell.tilt, cell.rot = tilt, rot
@@ -803,20 +938,18 @@ def solve_robot(cell, pose_cell, seed=None):
 
 def add_mechanism_programs(RDK, cell):
     """Track and positioner sub-programs (joint targets) used by DemoCycle."""
-    tr = {}
-    for name, y in (("Track_Home", ROBOT_HOME_Y), ("Track_ToA", 0.0), ("Track_ToB1", TRACK_B1), ("Track_ToB2", TRACK_B2)):
+    for name, y in (("Track_Home", ROBOT_HOME_Y), ("Track_ToA", TRACK_A), ("Track_ToB1", TRACK_B1), ("Track_ToB2", TRACK_B2)):
         p = Prog(RDK, cell, name, cell.track, is_robot=False)
         p.item.setSpeedJoints(TRACK_SPEED_MMS)
         p.movej(p.joint_target(name + "_T", [y]))
-        tr[name] = p
-    for name, deg in (("Pos_TiltUp", 90.0), ("Pos_TiltDown", 0.0)):
+    # tilt: 0 -> +90 (faceplate faces +Y), 180 deg index = +90 -> -90 over the top, back to 0 at the end
+    for name, deg in (("Pos_TiltUp", TILT_B1), ("Pos_Index180", TILT_B2), ("Pos_TiltDown", 0.0)):
         p = Prog(RDK, cell, name, cell.tilt, is_robot=False)
         p.item.setSpeedJoints(POS_INDEX_DEGS)
         p.movej(p.joint_target(name + "_T", [deg]))
     for name, deg, speed in (("Pos_RotStart", ROT_A0, POS_INDEX_DEGS),
-                             ("Pos_RotSeamA_1", ROT_A0 + 190.0, POS_WELD_DEGS),
-                             ("Pos_RotSeamA_2", ROT_A1, POS_WELD_DEGS),
-                             ("Pos_Index180", ROT_B2, POS_INDEX_DEGS)):
+                             ("Pos_RotSeamA_1", ROT_A_MID, POS_WELD_DEGS),
+                             ("Pos_RotSeamA_2", ROT_A1, POS_WELD_DEGS)):
         p = Prog(RDK, cell, name, cell.rot, is_robot=False)
         p.item.setSpeedJoints(speed)
         p.movej(p.joint_target(name + "_T", [deg]))
@@ -825,7 +958,7 @@ def add_mechanism_programs(RDK, cell):
 def add_robot_programs(RDK, cell):
     """Robot sub-programs for the choreography plus the explicit MoveL seam programs."""
     ch = choreography()
-    robot, track = cell.robot, cell.track
+    robot = cell.robot
 
     # ---- home
     p = Prog(RDK, cell, "Robot_Home", robot)
@@ -833,18 +966,31 @@ def add_robot_programs(RDK, cell):
     home = p.joint_target("Home", ROBOT_Q_HOME)
     p.movej(home)
 
-    # ---- seam A: approach, laser scan, static torch while the positioner rotates
-    track.setJoints([0.0])
-    cell.tilt.setJoints([90.0])
-    cell.rot.setJoints([ROT_A0])
+    # ---- transit (park) pose: torch down over the track, outside the part sweep. Solved once at the seam-A
+    # station and stored as a JOINT target, so it is the same arm configuration at every track station.
+    set_state(cell, TRACK_A, TILT_B1, ROT_A0)
     robot.setJoints(ROBOT_Q_HOME)
+    q_transit = solve_robot(cell, ch["transit"], ROBOT_Q_HOME)
+    p = Prog(RDK, cell, "Robot_Transit", robot)
+    p.comment("Transit pose: torch down, TCP at x=%.0f z=%.0f over the track" % TRANSIT_TCP)
+    p.air()
+    if q_transit is not None:
+        transit = p.joint_target("Transit", q_transit)
+    else:
+        print("Transit pose unreachable at track y=%.0f - stored as a Cartesian target" % TRACK_A)
+        transit = p.cart_target("Transit", ch["transit"])
+    p.movej(transit)
+
+    # ---- seam A: approach (via transit), laser scan, static torch while the positioner rotates
+    set_state(cell, TRACK_A, TILT_B1, ROT_A0)
     p = Prog(RDK, cell, "Robot_ApproachA", robot)
     p.air()
-    appA = p.cart_target("ApproachA", ch["approachA"])
+    p.movej(transit)
+    appA = p.cart_target("ApproachA", ch["approachA"], q_transit)
     p.movej(appA)
 
     p = Prog(RDK, cell, "Robot_ScanA", robot)
-    p.comment("Laser seam search across seam A")
+    p.comment("Laser seam search: +/-%.0f mm along the seam axis, %.0f mm above seam A" % (SCAN_HALF, SCAN_HEIGHT))
     p.air()
     scan = [p.cart_target("ScanA_%02d" % k, T) for k, T in enumerate(ch["scan"])]
     p.movel(scan[0])
@@ -855,7 +1001,7 @@ def add_robot_programs(RDK, cell):
     p.item.setDO("LaserScan", 0)
 
     p = Prog(RDK, cell, "Robot_WeldA", robot)
-    p.comment("Seam A (flange - elbow): torch static at 12 o'clock, the positioner rotates the spool 380 deg")
+    p.comment("Seam A (flange - elbow): torch static at 12 o'clock, the positioner rotates the spool %.0f deg" % (ROT_A1 - ROT_A0))
     p.air()
     weldA = p.cart_target("WeldA", ch["weldA"])
     p.movel(weldA)
@@ -865,70 +1011,72 @@ def add_robot_programs(RDK, cell):
     p.call("Pos_RotSeamA_2")
     p.arc(False)
     p.air()
-    liftA = p.cart_target("LiftA", lifted(ch["weldA"], LIFT_APPROACH))
+    liftA = p.cart_target("LiftA", lifted(ch["weldA"], LIFT_PARK))
     p.movel(liftA)
+    p.movej(transit)
 
     # explicit MoveL alternative for seam A (part static, robot goes around); not used by DemoCycle
     p = Prog(RDK, cell, "Robot_WeldA_MoveL", robot)
-    p.comment("Alternative: robot drives the torch around seam A (positioner static at tilt 90 / rot %.0f)" % ROT_A0)
-    add_movel_seam(p, "A_", ch["weldA_movel"], LIFT_APPROACH, LIFT_APPROACH)
+    p.comment("Alternative: robot drives the torch around seam A (positioner static at tilt %.0f / rot %.0f)" % (TILT_B1, ROT_A0))
+    add_movel_seam(p, "A_", ch["weldA_movel"], ch["weldA_movel_n"], LIFT_PARK, LIFT_PARK)
 
-    # ---- seam B sectors
-    cell.rot.setJoints([ROT_A1])
-    track.setJoints([TRACK_B1])
-    robot.setJoints(ROBOT_Q_HOME)
+    # ---- seam B sectors 1-2 (tilt +90, pipe along +X, track at +761)
+    set_state(cell, TRACK_B1, TILT_B1, ROT_A1)
+    robot.setJoints(q_transit or ROBOT_Q_HOME)
     p = Prog(RDK, cell, "Robot_ApproachB1", robot)
     p.air()
-    p.movej(p.cart_target("ApproachB1", lifted(ch["sector1"][0], LIFT_APPROACH - 30.0)))
+    p.movej(p.cart_target("ApproachB1", radial(ch["sector1"][0], ch["sector1_n"][0], LIFT_APPROACH), q_transit))
     p = Prog(RDK, cell, "Robot_WeldB_S1", robot)
-    p.comment("Seam B sector 1: 12 -> 3 o'clock (toward the robot)")
-    add_movel_seam(p, "S1_", ch["sector1"], None, LIFT_SECTOR)
+    p.comment("Seam B sector 1: 12 o'clock -> -Y side (%.0f..%.0f deg), then via 1:30 o'clock retracted" % (SECTOR_A0, SECTOR_A1))
+    add_movel_seam(p, "S1_", ch["sector1"], ch["sector1_n"], None, LIFT_APPROACH, via=ch["sector1_via"])
     p = Prog(RDK, cell, "Robot_WeldB_S2", robot)
-    p.comment("Seam B sector 2: 12 -> 9 o'clock")
-    add_movel_seam(p, "S2_", ch["sector2"], LIFT_SECTOR, LIFT_APPROACH)
+    p.comment("Seam B sector 2: 12 o'clock -> +Y side, then retract to the transit pose")
+    add_movel_seam(p, "S2_", ch["sector2"], ch["sector2_n"], LIFT_APPROACH, LIFT_PARK, end=transit)
 
-    cell.rot.setJoints([ROT_B2])
-    track.setJoints([TRACK_B2])
-    robot.setJoints(ROBOT_Q_HOME)
+    # ---- seam B sectors 3-4 (after the 180 deg index: tilt -90, track at -761)
+    set_state(cell, TRACK_B2, TILT_B2, ROT_A1)
+    robot.setJoints(q_transit or ROBOT_Q_HOME)
     p = Prog(RDK, cell, "Robot_ApproachB2", robot)
     p.air()
-    p.movej(p.cart_target("ApproachB2", lifted(ch["sector3"][0], LIFT_APPROACH - 30.0)))
+    p.movej(p.cart_target("ApproachB2", radial(ch["sector3"][0], ch["sector3_n"][0], LIFT_APPROACH), q_transit))
     p = Prog(RDK, cell, "Robot_WeldB_S3", robot)
-    p.comment("Seam B sector 3 (after 180 deg index): 12 -> 3 o'clock")
-    add_movel_seam(p, "S3_", ch["sector3"], None, LIFT_SECTOR)
+    p.comment("Seam B sector 3 (after the 180 deg index): 12 o'clock -> -Y side, then via 1:30 o'clock retracted")
+    add_movel_seam(p, "S3_", ch["sector3"], ch["sector3_n"], None, LIFT_APPROACH, via=ch["sector3_via"])
     p = Prog(RDK, cell, "Robot_WeldB_S4", robot)
-    p.comment("Seam B sector 4: 12 -> 9 o'clock")
-    add_movel_seam(p, "S4_", ch["sector4"], LIFT_SECTOR, LIFT_APPROACH)
+    p.comment("Seam B sector 4: 12 o'clock -> +Y side, then retract to the transit pose")
+    add_movel_seam(p, "S4_", ch["sector4"], ch["sector4_n"], LIFT_APPROACH, LIFT_PARK, end=transit)
 
     # restore the start state
-    track.setJoints([ROBOT_HOME_Y])
-    cell.tilt.setJoints([0.0])
-    cell.rot.setJoints([ROT_A0])
+    set_state(cell, ROBOT_HOME_Y, 0.0, ROT_A0)
     robot.setJoints(ROBOT_Q_HOME)
 
 
-def add_movel_seam(p, prefix, poses, lift_in, lift_out):
-    """MoveL weld along `poses`: optional approach from lift_in above the first point, arc on/off, retract lift_out."""
+def add_movel_seam(p, prefix, poses, normals, lift_in, lift_out, via=None, end=None):
+    """MoveL weld along `poses`: optional radial approach from lift_in (along the surface normal) before the first
+    point, arc on/off, radial retract lift_out after the last point, optional MoveJ to a via target and/or a final
+    target (e.g. the transit joint target)."""
     p.air()
-    seed = None
     if lift_in is not None:
-        t0 = p.cart_target(prefix + "app", lifted(poses[0], lift_in))
-        p.movej(t0)
+        p.movej(p.cart_target(prefix + "app", radial(poses[0], normals[0], lift_in)))
     start = p.cart_target(prefix + "start", poses[0])
     p.movel(start)
     p.weld()
     p.arc(True)
     for k, T in enumerate(poses[1:], 1):
-        p.movel(p.cart_target(prefix + "%03d" % k, T, seed))
+        p.movel(p.cart_target(prefix + "%03d" % k, T))
     p.arc(False)
     p.air()
-    p.movel(p.cart_target(prefix + "lift", lifted(poses[-1], lift_out)))
+    p.movel(p.cart_target(prefix + "lift", radial(poses[-1], normals[-1], lift_out)))
+    if via is not None:
+        p.movej(p.cart_target(prefix + "via", via))
+    if end is not None:
+        p.movej(end)
 
 
 def add_demo_cycle(RDK, cell):
     """Main program: the storyboard sequence with view switches (View_* macros) between shots."""
     p = Prog(RDK, cell, "DemoCycle", cell.robot)
-    p.comment("Robotic pipe-spool welding cell demo: seam A (rotating part) + seam B (4 sectors, 180 deg index)")
+    p.comment("Robotic pipe-spool welding cell demo: seam A (rotating part) + seam B (4 sectors, 180 deg tilt index)")
     p.call("View_C1_wide")
     p.call("Cell_Home")
     p.item.Pause(1500)
@@ -936,23 +1084,25 @@ def add_demo_cycle(RDK, cell):
     p.call("Pos_TiltUp")
     p.call("Track_ToA")
     p.call("Robot_ApproachA")
-    p.call("View_C3_closeA")
+    p.call("View_C3a_laser")
     p.call("Robot_ScanA")
-    p.call("Robot_WeldA")
+    p.call("View_C3b_closeA")
+    p.call("Robot_WeldA")                 # switches to View_C4_midA half-way; ends in the transit pose
     p.call("View_C5_reposition")
     p.call("Track_ToB1")
     p.call("Robot_ApproachB1")
-    p.call("View_C6_closeB1")
+    p.call("View_C6a_closeB1")
     p.call("Robot_WeldB_S1")
-    p.call("Robot_WeldB_S2")
+    p.call("View_C6b_closeB1")
+    p.call("Robot_WeldB_S2")              # ends in the transit pose
     p.call("View_C7_index")
-    p.call("Robot_Home")
-    p.call("Pos_Index180")
+    p.call("Pos_Index180")                # tilt +90 -> -90 over the top (pipe stays along +X)
     p.call("Track_ToB2")
     p.call("Robot_ApproachB2")
-    p.call("View_C8_closeB2")
+    p.call("View_C8a_closeB2")
     p.call("Robot_WeldB_S3")
-    p.call("Robot_WeldB_S4")
+    p.call("View_C8b_closeB2")
+    p.call("Robot_WeldB_S4")              # ends in the transit pose
     p.call("View_C9_final")
     p.call("Robot_Home")
     p.call("Track_Home")
@@ -962,8 +1112,8 @@ def add_demo_cycle(RDK, cell):
     h = Prog(RDK, cell, "Cell_Home", cell.robot)
     h.call("Robot_Home")
     h.call("Track_Home")
-    h.call("Pos_RotStart")
     h.call("Pos_TiltDown")
+    h.call("Pos_RotStart")
     h.item.setDO("WeldArc", 0)
     h.item.setDO("LaserScan", 0)
 
@@ -981,7 +1131,7 @@ def add_cameras(RDK, cell):
     """One reference frame per storyboard shot (+Z = viewing direction); optional 2D camera windows."""
     folder = RDK.AddFrame("Cameras")
     folder.setVisible(False)
-    for name, cam, aim, lens in SHOTS:
+    for name, f0, f1, cam, aim, lens in SHOTS:
         fr = RDK.AddFrame("Cam_" + name, folder)
         fr.setPose(camera_frame_pose(cam, aim))
         fr.setVisible(False)
@@ -1090,8 +1240,8 @@ def build(RDK):
     add_robot_programs(RDK, cell)
     add_demo_cycle(RDK, cell)
     add_curve_follow_projects(RDK, cell)
-    for name in ("Robot_ApproachA", "Robot_ScanA", "Robot_WeldA", "Robot_WeldB_S1", "Robot_WeldB_S2",
-                 "Robot_WeldB_S3", "Robot_WeldB_S4", "Robot_WeldA_MoveL"):
+    for name in ("Robot_Transit", "Robot_ApproachA", "Robot_ScanA", "Robot_WeldA", "Robot_ApproachB1", "Robot_WeldB_S1",
+                 "Robot_WeldB_S2", "Robot_ApproachB2", "Robot_WeldB_S3", "Robot_WeldB_S4", "Robot_WeldA_MoveL"):
         prog = cell.programs[name]
         prog.ShowTargets(False)
         try:
@@ -1101,7 +1251,7 @@ def build(RDK):
         except Exception as exc:
             print("Program %s: Update failed (%s)" % (name, exc))
     RDK.setSimulationSpeed(1.0)
-    RDK.setViewPose(view_pose(SHOTS[0][1], SHOTS[0][2]))
+    RDK.setViewPose(view_pose(SHOTS[0][3], SHOTS[0][4]))
     RDK.Render(True)
     if SAVE_RDK:
         RDK.Save(os.path.join(HERE, STATION_NAME + ".rdk"), cell.station)

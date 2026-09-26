@@ -1,8 +1,14 @@
 """Visual check of the RoboDK target maths: draw the generated torch targets on the Blender spool/positioner.
 
-Renders out/robodk_seamA.png, out/robodk_seamB.png (tool Z arrows at every target, cyan = weld, yellow =
-approach/scan) and out/robodk_torch.png (the generated torch STL with its TCP marker).
-Run:  python3 tests/t_robodk_targets.py
+Renders (Blender, Cycles, 1280x720):
+  out/robodk_seamA.png   tilt +90 / rot -20: static seam-A target (cyan), approach + laser-scan targets (yellow),
+                         the MoveL alternative around seam A (green) and the transit pose (magenta)
+  out/robodk_seamB1.png  tilt +90 / rot 360 (pipe along +X): sectors 1 (cyan) and 2 (orange), radial approach and
+                         via targets (yellow)
+  out/robodk_seamB2.png  tilt -90 (after the 180 deg index): sectors 3 and 4, same colours
+  out/robodk_torch.png   the generated torch STL with its TCP marker
+Tool Z arrows end at the TCP; the short red stub is tool X (torch body direction).
+Run:  python3 tests/t_robodk_targets.py        (needs Blender's bpy; renders ~1 min)
 """
 import math
 import os
@@ -18,9 +24,10 @@ from cell import spool, positioner, geom as G, materials
 import build_station as B
 
 OUT = os.path.join(ROOT, "out")
+CYAN, ORANGE, YELLOW, GREEN, MAGENTA = (0.1, 0.9, 1.0), (1.0, 0.5, 0.1), (1.0, 0.9, 0.1), (0.4, 1.0, 0.4), (1.0, 0.2, 0.9)
 
 
-def arrow(name, T, length=0.06, color=(0.1, 0.9, 1.0), col=None):
+def arrow(name, T, length=0.06, color=CYAN, col=None):
     """Cylinder along the tool +Z ending at the TCP (mm pose -> metres)."""
     p = mathutils.Vector([v / 1000.0 for v in T.Pos()])
     z = mathutils.Vector(T.VZ())
@@ -53,7 +60,9 @@ def setup(tilt, rot):
     sc.world = w
     w.use_nodes = True
     w.node_tree.nodes["Background"].inputs[0].default_value = (0.3, 0.33, 0.38, 1)
-    return sc
+    col = bpy.data.collections.new("Targets")
+    sc.collection.children.link(col)
+    return sc, col
 
 
 def render(sc, loc, tgt, path, lens=45):
@@ -71,28 +80,41 @@ def render(sc, loc, tgt, path, lens=45):
     bpy.ops.render.render(write_still=True)
 
 
+def sectors(col, ch, keys):
+    """Two sectors of seam B with their radial approach / via targets."""
+    for key, c in zip(keys, (CYAN, ORANGE)):
+        poses, normals = ch[key], ch[key + "_n"]
+        for k, T in enumerate(poses[::2]):
+            arrow("%s_%d" % (key, k), T, 0.05, c, col)
+        arrow(key + "_app", B.radial(poses[0], normals[0], B.LIFT_APPROACH), 0.04, YELLOW, col)
+        arrow(key + "_lift", B.radial(poses[-1], normals[-1], B.LIFT_APPROACH), 0.04, YELLOW, col)
+        arrow(key + "_via", ch[key + "_via"], 0.05, YELLOW, col)
+
+
 ch = B.choreography()
 
-# --- seam A state: tilt 90, rot 70: static torch target, approach, laser scan
-sc = setup(90, B.ROT_A0)
-col = bpy.data.collections.new("Targets")
-sc.collection.children.link(col)
-arrow("weldA", ch["weldA"], 0.08, col=col)
-arrow("appA", ch["approachA"], 0.05, (1.0, 0.9, 0.1), col)
+# --- seam A state: tilt +90 (faceplate faces +Y), rot -20: static torch target, approach, laser scan, transit
+sc, col = setup(B.TILT_B1, B.ROT_A0)
+arrow("weldA", ch["weldA"], 0.08, CYAN, col)
+arrow("appA", ch["approachA"], 0.05, YELLOW, col)
 for k, T in enumerate(ch["scan"]):
-    arrow("scan%d" % k, T, 0.03, (1.0, 0.9, 0.1), col)
+    arrow("scan%d" % k, T, 0.03, YELLOW, col)
 for k, T in enumerate(ch["weldA_movel"][::4]):
-    arrow("amovel%d" % k, T, 0.05, (0.4, 1.0, 0.4), col)
-render(sc, (1.5, -1.3, 1.9), (0.4, 0.0, 1.4), os.path.join(OUT, "robodk_seamA.png"), 50)
+    arrow("amovel%d" % k, T, 0.05, GREEN, col)
+arrow("transit", ch["transit"], 0.10, MAGENTA, col)
+render(sc, (1.9, -1.4, 2.3), (0.45, 0.35, 1.55), os.path.join(OUT, "robodk_seamA.png"), 40)
 
-# --- seam B state: tilt 90, rot 450 (pipe along +Y): sectors 1 and 2
-sc = setup(90, B.ROT_A1)
-col = bpy.data.collections.new("Targets")
-sc.collection.children.link(col)
-for key, c in (("sector1", (0.1, 0.9, 1.0)), ("sector2", (1.0, 0.5, 0.1))):
-    for k, T in enumerate(ch[key][::2]):
-        arrow("%s_%d" % (key, k), T, 0.05, c, col)
-render(sc, (1.7, -0.9, 2.0), (0.76, 0.38, 1.4), os.path.join(OUT, "robodk_seamB.png"), 50)
+# --- seam B, sectors 1-2: tilt +90, rot 360 (pipe along +X, seam centre (0.381, 0.761, 1.35))
+sc, col = setup(B.TILT_B1, B.ROT_A1)
+sectors(col, ch, ("sector1", "sector2"))
+arrow("transitB1", ch["transitB1"], 0.10, MAGENTA, col)
+render(sc, (1.9, -0.5, 2.2), (0.5, 0.72, 1.45), os.path.join(OUT, "robodk_seamB1.png"), 45)
+
+# --- seam B, sectors 3-4: tilt -90 after the 180 deg index (seam centre (0.381, -0.761, 1.35))
+sc, col = setup(B.TILT_B2, B.ROT_A1)
+sectors(col, ch, ("sector3", "sector4"))
+arrow("transitB2", ch["transitB2"], 0.10, MAGENTA, col)
+render(sc, (1.9, 0.5, 2.2), (0.5, -0.72, 1.45), os.path.join(OUT, "robodk_seamB2.png"), 45)
 
 # --- torch STL alone with the TCP marker
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -106,7 +128,7 @@ torch.data.materials.append(materials.get("dark_metal"))
 bpy.ops.object.shade_smooth_by_angle(angle=math.radians(40))
 col = bpy.data.collections.new("Targets")
 sc.collection.children.link(col)
-arrow("tcp", B.tcp_pose(), 0.04, col=col)
+arrow("tcp", B.tcp_pose(), 0.04, CYAN, col)
 bpy.ops.object.light_add(type='SUN', location=(1, -1, 2), rotation=(0.6, 0.3, 0.2))
 bpy.context.object.data.energy = 4
 w = bpy.data.worlds.new("W")
@@ -114,4 +136,4 @@ sc.world = w
 w.use_nodes = True
 w.node_tree.nodes["Background"].inputs[0].default_value = (0.5, 0.52, 0.55, 1)
 render(sc, (0.75, -1.25, 0.55), (0.07, 0.0, 0.24), os.path.join(OUT, "robodk_torch.png"), 50)
-print("rendered robodk_seamA.png, robodk_seamB.png, robodk_torch.png")
+print("rendered robodk_seamA.png, robodk_seamB1.png, robodk_seamB2.png, robodk_torch.png")
