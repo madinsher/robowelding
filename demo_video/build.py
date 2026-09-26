@@ -124,6 +124,14 @@ def apply_fx_off(sc, spec):
         for ob in bpy.data.objects:
             if ob.type == 'LIGHT' and ob.name not in keep:
                 ob.data.use_shadow = False
+    if "coarseshadow" in offs:    # bigger shadow-map texels: the arc light's 1 mm default is the main cost
+        for ob in bpy.data.objects:
+            if ob.type == 'LIGHT' and ob.data.use_shadow:
+                ob.data.shadow_maximum_resolution = 0.008 if ob.name == "ArcLight" else max(ob.data.shadow_maximum_resolution, 0.015)
+        sc.eevee.shadow_resolution_scale = 0.25
+    if "fastshade" in offs:
+        sc.eevee.shadow_ray_count = 1
+        sc.eevee.shadow_step_count = 2
     if "softshadow" in offs:
         for lt in bpy.data.lights:
             lt.shadow_soft_size = 0.0

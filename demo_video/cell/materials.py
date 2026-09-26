@@ -373,7 +373,7 @@ def _weld_bead():
     nt.links.new(u, sc.inputs[0])
     comb = nt.nodes.new("ShaderNodeCombineXYZ"); nt.links.new(sc.outputs[0], comb.inputs["X"]); nt.links.new(sep.outputs["Z"], comb.inputs["Y"])
     nt.links.new(comb.outputs[0], wave.inputs["Vector"])
-    bump = nt.nodes.new("ShaderNodeBump"); bump.inputs["Strength"].default_value = 0.45; bump.inputs["Distance"].default_value = 0.002
+    bump = nt.nodes.new("ShaderNodeBump"); bump.inputs["Strength"].default_value = 0.3; bump.inputs["Distance"].default_value = 0.0015
     nt.links.new(wave.outputs["Fac"], bump.inputs["Height"]); nt.links.new(bump.outputs["Normal"], b.inputs["Normal"])
     # colour: slightly darker/bluer heat tint near the ripples
     m.surface_render_method = 'DITHERED'
