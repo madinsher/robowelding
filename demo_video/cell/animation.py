@@ -36,9 +36,9 @@ T = dict(
     index_180=(704, 752),
     track_to_B2=(700, 768),
     robot_to_B2=(742, 768),
-    sector3=(769, 830), arc_3=(772, 828),
-    back_to_top2=(831, 840),
-    sector4=(841, 888), arc_4=(844, 886),
+    sector3=(769, 822), arc_3=(772, 820),
+    back_to_top2=(823, 846),
+    sector4=(847, 888), arc_4=(850, 886),
     lift_B2=(889, 900),
     robot_home=(900, 950),
     track_home=(905, 960),
@@ -123,7 +123,21 @@ def lifted(Tm, dz):
 
 
 # ------------------------------------------------------------------ main
+def _cache_key():
+    import hashlib, os
+    h = hashlib.sha1()
+    here = os.path.dirname(os.path.abspath(__file__))
+    for fn in ("animation.py", "layout.py", "robot_urdf.py", "robot_build.py"):
+        with open(os.path.join(here, fn), "rb") as fh:
+            h.update(fh.read())
+    return h.hexdigest()[:12]
+
+
 def build(scene, robot, pos, spool):
+    import os
+    cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache = os.path.join(cache_dir, f"anim_cache_{_cache_key()}.npz")
     arm = robot["arm"]
     TOOL = RB.tool_transform()
     nF = N_FRAMES
@@ -151,143 +165,153 @@ def build(scene, robot, pos, spool):
 
     # ---- robot: IK targets per frame for welding / scanning; joint-space transfers elsewhere
     q_home = np.array(L.ROBOT_Q_HOME, dtype=float)
+    cached = None
+    if os.path.exists(cache):
+        z = np.load(cache)
+        cached = dict(Q=z["Q"], arc_on=z["arc_on"], laser_on=z["laser_on"], slots=z["slots"])
     targets = {}       # frame -> 4x4 TCP target (world)
     weld_beads = []    # (bead_key, slot, (f0, f1))
 
     def base_at(f):
         return RB.base_matrix(track[f - 1])
 
-    # seam A (tilt 90 during the weld)
-    TsA = spool_world(90.0, ROT_A0)
-    sfA = seam_frame("A", TsA)
-    pA, nA, tA = seam_point(sfA, top_angle(sfA))
-    # relative surface motion: the part rotates +rot about +X world (faceplate axis); torch fixed. Travel direction of the
-    # torch relative to the part is opposite to the surface velocity at the top: v_surface = omega x r
-    TA = target_frame(pA, nA, -tA, robot_lean(pA, 0.0), push_deg=10.0)
-    TA_scan = lifted(TA, 0.035)
-    for f in range(T["weld_A"][0], T["weld_A"][1] + 1):
-        w = 0.0025 * math.sin(2 * math.pi * 2.5 * (f - T["weld_A"][0]) / FPS)   # weaving along the seam axis (X)
-        Tw = TA.copy(); Tw[:3, 3] = Tw[:3, 3] + np.array([w, 0, 0])
-        targets[f] = Tw
-    # laser scan: traverse across the seam 35 mm above it
-    a, b = T["laser"]
-    for f in range(a, b + 1):
-        s = frac(f, (a, b))
-        x = -0.06 + 0.12 * (0.5 - 0.5 * math.cos(math.pi * s))          # sweep -60..+60 mm across (along X)
-        Tw = TA_scan.copy(); Tw[:3, 3] = Tw[:3, 3] + np.array([x, 0, 0]); targets[f] = Tw
-        laser_on[f - 1] = 1.0
-    for f in range(T["to_weld_A"][0], T["to_weld_A"][1] + 1):
-        s = smoothstep(frac(f, T["to_weld_A"]))
-        Tw = TA_scan.copy(); Tw[:3, 3] = TA_scan[:3, 3] * (1 - s) + TA[:3, 3] * s + np.array([0.06 * (1 - s), 0, 0]); targets[f] = Tw
-    arc_on[T["arc_A"][0] - 1:T["arc_A"][1]] = 1.0
-    weld_beads.append(("A", 0, T["arc_A"]))
-
-    # seam B sectors
-    def sector(span, arc_span, rot_deg, track_y, toward_plus_x, slot):
-        Ts = spool_world(90.0, rot_deg)
-        sf = seam_frame("B", Ts)
-        a_top = top_angle(sf)
-        p5, _, _ = seam_point(sf, a_top + 5.0)
-        sgn = 1.0 if ((p5[0] > sf[0][0]) == toward_plus_x) else -1.0
-        f0, f1 = span
-        for f in range(f0, f1 + 1):
-            s = frac(f, span)
-            ang = a_top + sgn * 92.0 * s
-            p, n, t = seam_point(sf, ang)
-            w = 0.0025 * math.sin(2 * math.pi * 2.5 * (f - f0) / FPS)
-            p = p + w * sf[1]
-            targets[f] = target_frame(p, n, t * sgn, robot_lean(p, track_y), push_deg=10.0)
-        arc_on[arc_span[0] - 1:arc_span[1]] = 1.0
-        weld_beads.append(("B", slot, arc_span))
-        return targets[f0], targets[f1]
-
-    s1_start, s1_end = sector(T["sector1"], T["arc_1"], ROT_A1, TRACK_B1, True, 0)
-    s2_start, s2_end = sector(T["sector2"], T["arc_2"], ROT_A1, TRACK_B1, False, 1)
-    s3_start, s3_end = sector(T["sector3"], T["arc_3"], ROT_B2, TRACK_B2, True, 2)
-    s4_start, s4_end = sector(T["sector4"], T["arc_4"], ROT_B2, TRACK_B2, False, 3)
-
-    # ---- transfers (Cartesian lifts + joint-space moves).  Solve IK for key poses first.
-    Q_REF = np.array([0.0, 0.0, 0.0, 0.0, 1.0, 0.0])      # wrist bent ~57° positive, q4/q6 near zero
-    def solve(Tm, q0, f):
-        q, ok, err = arm.ik(Tm, q0, base_at(f), TOOL, free_spin=True, q_ref=Q_REF)
-        if not ok:
-            q, ok, err = arm.ik(Tm, q_home, base_at(f), TOOL, iters=400, free_spin=True, q_ref=Q_REF)
-        if not ok:
-            IK_FAILS.append((f, err))
-        return q
-    # key poses
-    q_appA = solve(lifted(TA, 0.15), q_home, T["robot_to_A"][1])
-    q_scan0 = solve(targets[T["laser"][0]], q_appA, T["laser"][0])
-    q_liftA = solve(lifted(TA, 0.15), q_appA, T["lift_A"][1])
-    q_appB1 = solve(lifted(s1_start, 0.12), q_liftA, T["robot_to_B1"][1])
-    q_s1_lift = solve(lifted(s1_end, 0.06), q_appB1, T["back_to_top1"][0])
-    q_s2_app = solve(lifted(s2_start, 0.06), q_s1_lift, T["back_to_top1"][1])
-    q_s2_lift = solve(lifted(s2_end, 0.15), q_s2_app, T["lift_B1"][1])
-    q_appB2 = solve(lifted(s3_start, 0.12), q_appB1, T["robot_to_B2"][1])
-    q_s3_lift = solve(lifted(s3_end, 0.06), q_appB2, T["back_to_top2"][0])
-    q_s4_app = solve(lifted(s4_start, 0.06), q_s3_lift, T["back_to_top2"][1])
-    q_s4_lift = solve(lifted(s4_end, 0.15), q_s4_app, T["lift_B2"][1])
-
-    def joint_move(span, q0, q1, via=None):
-        a, b = span
-        pts = [q0] + (via or []) + [q1]
+    if cached is None:
+        # seam A (tilt 90 during the weld)
+        TsA = spool_world(90.0, ROT_A0)
+        sfA = seam_frame("A", TsA)
+        pA, nA, tA = seam_point(sfA, top_angle(sfA))
+        # relative surface motion: the part rotates +rot about +X world (faceplate axis); torch fixed. Travel direction of the
+        # torch relative to the part is opposite to the surface velocity at the top: v_surface = omega x r
+        TA = target_frame(pA, nA, -tA, robot_lean(pA, 0.0), push_deg=10.0)
+        TA_scan = lifted(TA, 0.035)
+        for f in range(T["weld_A"][0], T["weld_A"][1] + 1):
+            w = 0.0025 * math.sin(2 * math.pi * 2.5 * (f - T["weld_A"][0]) / FPS)   # weaving along the seam axis (X)
+            Tw = TA.copy(); Tw[:3, 3] = Tw[:3, 3] + np.array([w, 0, 0])
+            targets[f] = Tw
+        # laser scan: traverse across the seam 35 mm above it
+        a, b = T["laser"]
         for f in range(a, b + 1):
-            s = smoothstep(frac(f, span)) * (len(pts) - 1)
-            i = min(int(s), len(pts) - 2); u = s - i
-            Q[f - 1] = pts[i] * (1 - u) + pts[i + 1] * u
-    def cart_move(span, T0, T1, q_seed):
-        a, b = span
-        q = q_seed
-        for f in range(a, b + 1):
-            s = smoothstep(frac(f, span))
-            Tm = T0.copy(); Tm[:3, 3] = T0[:3, 3] * (1 - s) + T1[:3, 3] * s
-            # slerp-free orientation blend: use T0 orientation for s<0.5 else T1 (close anyway)
-            Tm[:3, :3] = T0[:3, :3] if s < 0.5 else T1[:3, :3]
-            q = solve(Tm, q, f); Q[f - 1] = q
-        return q
-    def hold(span, q):
-        a, b = span; Q[a - 1:b] = q
+            s = frac(f, (a, b))
+            x = -0.06 + 0.12 * (0.5 - 0.5 * math.cos(math.pi * s))          # sweep -60..+60 mm across (along X)
+            Tw = TA_scan.copy(); Tw[:3, 3] = Tw[:3, 3] + np.array([x, 0, 0]); targets[f] = Tw
+            laser_on[f - 1] = 1.0
+        for f in range(T["to_weld_A"][0], T["to_weld_A"][1] + 1):
+            s = smoothstep(frac(f, T["to_weld_A"]))
+            Tw = TA_scan.copy(); Tw[:3, 3] = TA_scan[:3, 3] * (1 - s) + TA[:3, 3] * s + np.array([0.06 * (1 - s), 0, 0]); targets[f] = Tw
+        arc_on[T["arc_A"][0] - 1:T["arc_A"][1]] = 1.0
+        weld_beads.append(("A", 0, T["arc_A"]))
 
-    # rest
-    hold((1, T["robot_to_A"][0]), q_home)
-    joint_move(T["robot_to_A"], q_home, q_appA)
-    hold((T["robot_to_A"][1], T["laser"][0]), q_appA)
-    # scan + weld A: per-frame IK
-    q = q_appA
-    for f in range(T["laser"][0] - 2, T["weld_A"][1] + 1):
-        if f in targets:
+        # seam B sectors
+        def sector(span, arc_span, rot_deg, track_y, toward_plus_x, slot):
+            Ts = spool_world(90.0, rot_deg)
+            sf = seam_frame("B", Ts)
+            a_top = top_angle(sf)
+            p5, _, _ = seam_point(sf, a_top + 5.0)
+            sgn = 1.0 if ((p5[0] > sf[0][0]) == toward_plus_x) else -1.0
+            f0, f1 = span
+            for f in range(f0, f1 + 1):
+                s = frac(f, span)
+                ang = a_top + sgn * 92.0 * s
+                p, n, t = seam_point(sf, ang)
+                w = 0.0025 * math.sin(2 * math.pi * 2.5 * (f - f0) / FPS)
+                p = p + w * sf[1]
+                targets[f] = target_frame(p, n, t * sgn, robot_lean(p, track_y), push_deg=10.0)
+            arc_on[arc_span[0] - 1:arc_span[1]] = 1.0
+            weld_beads.append(("B", slot, arc_span))
+            return targets[f0], targets[f1]
+
+        s1_start, s1_end = sector(T["sector1"], T["arc_1"], ROT_A1, TRACK_B1, True, 0)
+        s2_start, s2_end = sector(T["sector2"], T["arc_2"], ROT_A1, TRACK_B1, False, 1)
+        s3_start, s3_end = sector(T["sector3"], T["arc_3"], ROT_B2, TRACK_B2, True, 2)
+        s4_start, s4_end = sector(T["sector4"], T["arc_4"], ROT_B2, TRACK_B2, False, 3)
+
+        # ---- transfers (Cartesian lifts + joint-space moves).  Solve IK for key poses first.
+        Q_REF = np.array([0.0, 0.0, 0.0, 0.0, 1.0, 0.0])      # wrist bent ~57° positive, q4/q6 near zero
+        def solve(Tm, q0, f):
+            q, ok, err = arm.ik(Tm, q0, base_at(f), TOOL, free_spin=True, q_ref=Q_REF)
+            if not ok:
+                q, ok, err = arm.ik(Tm, q_home, base_at(f), TOOL, iters=400, free_spin=True, q_ref=Q_REF)
+            if not ok:
+                IK_FAILS.append((f, err))
+            return q
+        # key poses
+        q_appA = solve(lifted(TA, 0.15), q_home, T["robot_to_A"][1])
+        q_scan0 = solve(targets[T["laser"][0]], q_appA, T["laser"][0])
+        q_liftA = solve(lifted(TA, 0.15), q_appA, T["lift_A"][1])
+        q_appB1 = solve(lifted(s1_start, 0.12), q_liftA, T["robot_to_B1"][1])
+        q_s1_lift = solve(lifted(s1_end, 0.06), q_appB1, T["back_to_top1"][0])
+        q_s2_app = solve(lifted(s2_start, 0.06), q_s1_lift, T["back_to_top1"][1])
+        q_s2_lift = solve(lifted(s2_end, 0.15), q_s2_app, T["lift_B1"][1])
+        q_appB2 = solve(lifted(s3_start, 0.12), q_appB1, T["robot_to_B2"][1])
+        q_s3_lift = solve(lifted(s3_end, 0.06), q_appB2, T["back_to_top2"][0])
+        q_s4_app = solve(lifted(s4_start, 0.06), q_s3_lift, T["back_to_top2"][1])
+        q_s4_lift = solve(lifted(s4_end, 0.15), q_s4_app, T["lift_B2"][1])
+
+        def joint_move(span, q0, q1, via=None):
+            a, b = span
+            pts = [q0] + (via or []) + [q1]
+            for f in range(a, b + 1):
+                s = smoothstep(frac(f, span)) * (len(pts) - 1)
+                i = min(int(s), len(pts) - 2); u = s - i
+                Q[f - 1] = pts[i] * (1 - u) + pts[i + 1] * u
+        def cart_move(span, T0, T1, q_seed):
+            a, b = span
+            q = q_seed
+            for f in range(a, b + 1):
+                s = smoothstep(frac(f, span))
+                Tm = T0.copy(); Tm[:3, 3] = T0[:3, 3] * (1 - s) + T1[:3, 3] * s
+                # slerp-free orientation blend: use T0 orientation for s<0.5 else T1 (close anyway)
+                Tm[:3, :3] = T0[:3, :3] if s < 0.5 else T1[:3, :3]
+                q = solve(Tm, q, f); Q[f - 1] = q
+            return q
+        def hold(span, q):
+            a, b = span; Q[a - 1:b] = q
+
+        # rest
+        hold((1, T["robot_to_A"][0]), q_home)
+        joint_move(T["robot_to_A"], q_home, q_appA)
+        hold((T["robot_to_A"][1], T["laser"][0]), q_appA)
+        # scan + weld A: per-frame IK
+        q = q_appA
+        for f in range(T["laser"][0] - 2, T["weld_A"][1] + 1):
+            if f in targets:
+                q = solve(targets[f], q, f); Q[f - 1] = q
+            elif f < T["laser"][0]:
+                # descend from approach to scan start
+                s = smoothstep(frac(f, (T["laser"][0] - 2, T["laser"][0])))
+                Q[f - 1] = q_appA * (1 - s) + q_scan0 * s
+        q_weldA_end = Q[T["weld_A"][1] - 1]
+        cart_move(T["lift_A"], targets[T["weld_A"][1]], lifted(TA, 0.15), q_weldA_end)
+        joint_move(T["robot_to_B1"], Q[T["lift_A"][1] - 1], q_appB1)
+        # sector 1
+        q = cart_move((T["sector1"][0] - 3, T["sector1"][0]), lifted(s1_start, 0.12), s1_start, q_appB1)
+        for f in range(T["sector1"][0], T["sector1"][1] + 1):
             q = solve(targets[f], q, f); Q[f - 1] = q
-        elif f < T["laser"][0]:
-            # descend from approach to scan start
-            s = smoothstep(frac(f, (T["laser"][0] - 2, T["laser"][0])))
-            Q[f - 1] = q_appA * (1 - s) + q_scan0 * s
-    q_weldA_end = Q[T["weld_A"][1] - 1]
-    cart_move(T["lift_A"], targets[T["weld_A"][1]], lifted(TA, 0.15), q_weldA_end)
-    joint_move(T["robot_to_B1"], Q[T["lift_A"][1] - 1], q_appB1)
-    # sector 1
-    q = cart_move((T["sector1"][0] - 3, T["sector1"][0]), lifted(s1_start, 0.12), s1_start, q_appB1)
-    for f in range(T["sector1"][0], T["sector1"][1] + 1):
-        q = solve(targets[f], q, f); Q[f - 1] = q
-    q = cart_move((T["back_to_top1"][0], T["back_to_top1"][0] + 6), s1_end, lifted(s1_end, 0.06), q)
-    joint_move((T["back_to_top1"][0] + 6, T["back_to_top1"][1] - 4), q, q_s2_app)
-    q = cart_move((T["back_to_top1"][1] - 4, T["back_to_top1"][1]), lifted(s2_start, 0.06), s2_start, q_s2_app)
-    for f in range(T["sector2"][0], T["sector2"][1] + 1):
-        q = solve(targets[f], q, f); Q[f - 1] = q
-    q = cart_move(T["lift_B1"], s2_end, lifted(s2_end, 0.15), q)
-    hold((T["lift_B1"][1], T["robot_to_B2"][0]), q)
-    joint_move(T["robot_to_B2"], q, q_appB2)
-    q = cart_move((T["sector3"][0] - 3, T["sector3"][0]), lifted(s3_start, 0.12), s3_start, q_appB2)
-    for f in range(T["sector3"][0], T["sector3"][1] + 1):
-        q = solve(targets[f], q, f); Q[f - 1] = q
-    q = cart_move((T["back_to_top2"][0], T["back_to_top2"][0] + 3), s3_end, lifted(s3_end, 0.06), q)
-    joint_move((T["back_to_top2"][0] + 3, T["back_to_top2"][1] - 2), q, q_s4_app)
-    q = cart_move((T["back_to_top2"][1] - 2, T["back_to_top2"][1]), lifted(s4_start, 0.06), s4_start, q_s4_app)
-    for f in range(T["sector4"][0], T["sector4"][1] + 1):
-        q = solve(targets[f], q, f); Q[f - 1] = q
-    q = cart_move(T["lift_B2"], s4_end, lifted(s4_end, 0.15), q)
-    joint_move(T["robot_home"], q, q_home)
-    hold((T["robot_home"][1], nF), q_home)
+        q = cart_move((T["back_to_top1"][0], T["back_to_top1"][0] + 6), s1_end, lifted(s1_end, 0.06), q)
+        joint_move((T["back_to_top1"][0] + 6, T["back_to_top1"][1] - 4), q, q_s2_app)
+        q = cart_move((T["back_to_top1"][1] - 4, T["back_to_top1"][1]), lifted(s2_start, 0.06), s2_start, q_s2_app)
+        for f in range(T["sector2"][0], T["sector2"][1] + 1):
+            q = solve(targets[f], q, f); Q[f - 1] = q
+        q = cart_move(T["lift_B1"], s2_end, lifted(s2_end, 0.15), q)
+        hold((T["lift_B1"][1], T["robot_to_B2"][0]), q)
+        joint_move(T["robot_to_B2"], q, q_appB2)
+        q = cart_move((T["sector3"][0] - 3, T["sector3"][0]), lifted(s3_start, 0.12), s3_start, q_appB2)
+        for f in range(T["sector3"][0], T["sector3"][1] + 1):
+            q = solve(targets[f], q, f); Q[f - 1] = q
+        q = cart_move((T["back_to_top2"][0], T["back_to_top2"][0] + 6), s3_end, lifted(s3_end, 0.06), q)
+        joint_move((T["back_to_top2"][0] + 6, T["back_to_top2"][1] - 4), q, q_s4_app)
+        q = cart_move((T["back_to_top2"][1] - 4, T["back_to_top2"][1]), lifted(s4_start, 0.06), s4_start, q_s4_app)
+        for f in range(T["sector4"][0], T["sector4"][1] + 1):
+            q = solve(targets[f], q, f); Q[f - 1] = q
+        q = cart_move(T["lift_B2"], s4_end, lifted(s4_end, 0.15), q)
+        joint_move(T["robot_home"], q, q_home)
+        hold((T["robot_home"][1], nF), q_home)
 
+        np.savez(cache, Q=Q, arc_on=arc_on, laser_on=laser_on,
+                 slots=np.array([[ {"A": 0, "B": 1}[k], sl, sp[0], sp[1]] for (k, sl, sp) in weld_beads]))
+    else:
+        Q[:] = cached["Q"]; arc_on[:] = cached["arc_on"]; laser_on[:] = cached["laser_on"]
+        weld_beads = [("AB"[int(r[0])], int(r[1]), (int(r[2]), int(r[3]))) for r in cached["slots"]]
     # ---- keyframe everything
     for i, f in enumerate(frames):
         P.set_tilt(pos, tilt[i], frame=int(f))
@@ -371,7 +395,7 @@ SHOTS = [
     ("C4_midA", 331, 456, (1.9, 1.7, 1.55), (2.1, 1.35, 1.65), (0.55, 0.0, 1.45), (0.55, 0.0, 1.45), 45, 5.6),
     ("C5_reposition", 457, 528, (2.9, -2.3, 2.5), (2.6, -2.0, 2.3), (0.8, 0.2, 1.45), (0.8, 0.4, 1.45), 35, 0),
     ("C6_closeB1", 529, 696, (1.55, -0.95, 1.95), (1.4, -0.8, 1.9), (0.74, 0.38, 1.45), (0.74, 0.38, 1.45), 55, 4),
-    ("C7_index", 697, 768, (-1.9, 2.9, 2.1), (-1.6, 2.6, 2.0), (0.8, 0.0, 1.35), (0.8, -0.2, 1.35), 32, 0),
+    ("C7_index", 697, 768, (-2.9, 2.1, 2.5), (-2.5, 1.6, 2.35), (0.7, 0.0, 1.25), (0.7, -0.1, 1.2), 32, 0),
     ("C8_closeB2", 769, 888, (1.55, 0.95, 1.95), (1.4, 0.8, 1.9), (0.74, -0.38, 1.45), (0.74, -0.38, 1.45), 55, 4),
     ("C9_final", 889, 1008, (4.7, -5.3, 2.8), (4.2, -4.6, 2.6), (1.0, -0.3, 1.2), (1.0, -0.2, 1.25), 32, 0),
 ]
