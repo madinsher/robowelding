@@ -1,8 +1,14 @@
 """Storyboard / choreography: per-frame joint values for robot, track and positioner, weld progress, cameras.
 
+Layout (see layout.py): positioner tilt axis parallel to the track (world X); tilt +90 -> faceplate faces +Y.
+Seam A is welded by rotating the part 380° with the torch static at 12 o'clock; the pipe leg sweeps a disc in the
+plane y ~ 0.76 that the robot never crosses.  Seam B is welded by the robot in four 90° sectors (two per side), the
+180° index being a tilt flip +90 -> -90 (flange over the top).  Before every track / positioner motion the robot parks
+in a transit pose (wrist at x ~ 1.35) outside the sweep of the part.
 All motion is computed in numpy per frame and keyframed with LINEAR interpolation (transfers use smoothstep timing).
 """
 import math
+import os
 import bpy
 import numpy as np
 import mathutils
@@ -14,7 +20,7 @@ from . import positioner as P
 DEG = math.pi / 180.0
 FPS = L.FPS
 IK_FAILS = []
-N_FRAMES = 1008
+N_FRAMES = 1104
 
 # ------------------------------------------------------------------ timeline (frames, inclusive)
 T = dict(
@@ -24,34 +30,38 @@ T = dict(
     robot_to_A=(120, 190),
     laser=(193, 236),
     to_weld_A=(236, 240),
-    weld_A=(241, 456),
-    arc_A=(244, 453),
+    weld_A=(241, 456), arc_A=(244, 453),
     lift_A=(457, 470),
-    track_to_B1=(471, 528),
-    robot_to_B1=(471, 528),
-    sector1=(529, 612), arc_1=(532, 610),
-    back_to_top1=(613, 636),
-    sector2=(637, 696), arc_2=(640, 694),
-    lift_B1=(697, 712),
-    index_180=(704, 752),
-    track_to_B2=(700, 768),
-    robot_to_B2=(742, 768),
-    sector3=(769, 822), arc_3=(772, 820),
-    back_to_top2=(823, 846),
-    sector4=(847, 888), arc_4=(850, 886),
-    lift_B2=(889, 900),
-    robot_home=(900, 950),
-    track_home=(905, 960),
-    tilt_down=(908, 960),
-    end=(961, 1008),
+    to_transit_A=(471, 492),
+    track_to_B1=(486, 540),
+    robot_to_B1=(496, 537),
+    sector1=(541, 624), arc_1=(544, 622),
+    back_to_top1=(625, 648),
+    sector2=(649, 708), arc_2=(652, 706),
+    lift_B1=(709, 720),
+    to_transit_B1=(721, 740),
+    index_180=(742, 800),
+    track_to_B2=(742, 805),
+    robot_to_B2=(780, 807),
+    sector3=(811, 864), arc_3=(814, 862),
+    back_to_top2=(865, 888),
+    sector4=(889, 930), arc_4=(892, 928),
+    lift_B2=(931, 942),
+    to_transit_B2=(943, 968),
+    robot_home=(969, 1030),
+    track_home=(975, 1040),
+    tilt_down=(985, 1060),
+    end=(1061, 1104),
 )
-ROT_A0 = 70.0                # positioner faceplate angle at the start of seam A
-ROT_A1 = ROT_A0 + 380.0      # 450 -> pipe along +Y
-ROT_B2 = ROT_A1 - 180.0      # pipe along -Y
-SEAM_B_Y = L.SEAM_B_CENTER[0]     # |y| of seam B when the pipe lies along the track
-DY_B = 1.1                    # lateral track offset of the robot for the seam-B sectors (diagonal approach)
-TRACK_B1 = SEAM_B_Y + DY_B
-TRACK_B2 = -(SEAM_B_Y + DY_B)
+ROT_A0 = -20.0               # faceplate angle at the start of seam A
+ROT_A1 = ROT_A0 + 380.0      # = 360 -> pipe leg along +X (toward the robot) for the seam-B sectors
+TILT_B1, TILT_B2 = 90.0, -90.0
+SEAM_B_Y = L.POS_FACEPLATE_OFFSET + L.POS_FIXTURE_THICK + L.SEAM_B_CENTER[2]   # |y| of seam B at tilt +/-90
+TRACK_A = 0.2                # track station for seam A (arm slightly ahead of the seam plane, clear of the pipe sweep)
+TRACK_B1, TRACK_B2 = SEAM_B_Y, -SEAM_B_Y
+TRANSIT_TCP = (1.35, 2.05)   # (x, z) of the parked torch tip relative to the world (y = track station)
+LIFT_APPROACH = 0.12         # radial approach / retract distance at sector starts/ends
+LIFT_PARK = 0.15
 
 
 def smoothstep(t):
@@ -68,15 +78,16 @@ def frac(f, span):
 
 # ------------------------------------------------------------------ geometry helpers
 def spool_world(tilt_deg, rot_deg):
+    """World transform of the spool root for given positioner angles (tilt about world X, see positioner.set_tilt)."""
     zt = L.POS_TILT_AXIS_Z
-    c, s = math.cos(tilt_deg * DEG), math.sin(tilt_deg * DEG)
-    Ry = np.array([[c, 0, s, 0], [0, 1, 0, 0], [-s, 0, c, 0], [0, 0, 0, 1.0]])
+    c, s = math.cos(-tilt_deg * DEG), math.sin(-tilt_deg * DEG)
+    Rx = np.array([[1, 0, 0, 0], [0, c, -s, 0], [0, s, c, 0], [0, 0, 0, 1.0]])
     c2, s2 = math.cos(rot_deg * DEG), math.sin(rot_deg * DEG)
     Rz = np.array([[c2, -s2, 0, 0], [s2, c2, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1.0]])
     Tt = np.eye(4); Tt[2, 3] = zt
     Tf = np.eye(4); Tf[2, 3] = L.POS_FACEPLATE_OFFSET
     Tm = np.eye(4); Tm[2, 3] = L.POS_FIXTURE_THICK
-    return Tt @ Ry @ Tf @ Rz @ Tm
+    return Tt @ Rx @ Tf @ Rz @ Tm
 
 
 def seam_frame(which, T_spool):
@@ -102,10 +113,10 @@ def top_angle(sf):
     return math.degrees(math.atan2(v[2], u[2]))
 
 
-def robot_lean(p, track_y):
+def robot_lean(p, track_y, up=0.9):
     d = np.array([L.TRACK_X - p[0], track_y - p[1], 0.0])
     d /= np.linalg.norm(d)
-    return d + np.array([0, 0, 0.9])
+    return d + np.array([0, 0, up])
 
 
 def target_frame(p, n, t, lean, push_deg=10.0):
@@ -118,13 +129,51 @@ def target_frame(p, n, t, lean, push_deg=10.0):
     return Tm
 
 
-def lifted(Tm, dz):
-    Tl = Tm.copy(); Tl[:3, 3] = Tl[:3, 3] + np.array([0, 0, dz]); return Tl
+def offset(Tm, d):
+    Tl = Tm.copy(); Tl[:3, 3] = Tl[:3, 3] + np.asarray(d, dtype=float); return Tl
 
 
-# ------------------------------------------------------------------ main
+# ---- quaternion helpers for Cartesian moves with orientation blending
+def mat2quat(R):
+    m = R
+    tr = m[0, 0] + m[1, 1] + m[2, 2]
+    if tr > 0:
+        S = math.sqrt(tr + 1.0) * 2; w = 0.25 * S; x = (m[2, 1] - m[1, 2]) / S; y = (m[0, 2] - m[2, 0]) / S; z = (m[1, 0] - m[0, 1]) / S
+    elif m[0, 0] > m[1, 1] and m[0, 0] > m[2, 2]:
+        S = math.sqrt(1.0 + m[0, 0] - m[1, 1] - m[2, 2]) * 2; w = (m[2, 1] - m[1, 2]) / S; x = 0.25 * S; y = (m[0, 1] + m[1, 0]) / S; z = (m[0, 2] + m[2, 0]) / S
+    elif m[1, 1] > m[2, 2]:
+        S = math.sqrt(1.0 + m[1, 1] - m[0, 0] - m[2, 2]) * 2; w = (m[0, 2] - m[2, 0]) / S; x = (m[0, 1] + m[1, 0]) / S; y = 0.25 * S; z = (m[1, 2] + m[2, 1]) / S
+    else:
+        S = math.sqrt(1.0 + m[2, 2] - m[0, 0] - m[1, 1]) * 2; w = (m[1, 0] - m[0, 1]) / S; x = (m[0, 2] + m[2, 0]) / S; y = (m[1, 2] + m[2, 1]) / S; z = 0.25 * S
+    q = np.array([w, x, y, z]); return q / np.linalg.norm(q)
+
+
+def quat2mat(q):
+    w, x, y, z = q
+    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                     [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                     [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+def slerp(q0, q1, s):
+    d = float(np.dot(q0, q1))
+    if d < 0:
+        q1 = -q1; d = -d
+    if d > 0.9995:
+        q = q0 + s * (q1 - q0); return q / np.linalg.norm(q)
+    th = math.acos(d)
+    return (math.sin((1 - s) * th) * q0 + math.sin(s * th) * q1) / math.sin(th)
+
+
+def blend_pose(T0, T1, s):
+    Tm = np.eye(4)
+    Tm[:3, :3] = quat2mat(slerp(mat2quat(T0[:3, :3]), mat2quat(T1[:3, :3]), s))
+    Tm[:3, 3] = T0[:3, 3] * (1 - s) + T1[:3, 3] * s
+    return Tm
+
+
 def _cache_key():
-    import hashlib, os
+    import hashlib
     h = hashlib.sha1()
     here = os.path.dirname(os.path.abspath(__file__))
     for fn in ("animation.py", "layout.py", "robot_urdf.py", "robot_build.py"):
@@ -136,8 +185,8 @@ def _cache_key():
     return h.hexdigest()[:12]
 
 
+# ------------------------------------------------------------------ main
 def build(scene, robot, pos, spool):
-    import os
     cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out")
     os.makedirs(cache_dir, exist_ok=True)
     cache = os.path.join(cache_dir, f"anim_cache_{_cache_key()}.npz")
@@ -157,79 +206,29 @@ def build(scene, robot, pos, spool):
             s = frac(f, span); s = smoothstep(s) if ease else s
             arr[f - 1] = v0 + (v1 - v0) * s
         arr[b:] = v1
-    ramp(tilt, T["tilt_up"], 0.0, 90.0)
+    ramp(tilt, T["tilt_up"], 0.0, TILT_B1)
     ramp(rot, T["weld_A"], ROT_A0, ROT_A1, ease=False)
-    ramp(rot, T["index_180"], ROT_A1, ROT_B2)
-    ramp(tilt, T["tilt_down"], 90.0, 0.0)
-    ramp(track, T["track_to_A"], L.ROBOT_HOME_Y, 0.0)
-    ramp(track, T["track_to_B1"], 0.0, TRACK_B1)
+    ramp(tilt, T["index_180"], TILT_B1, TILT_B2)
+    ramp(tilt, T["tilt_down"], TILT_B2, 0.0)
+    ramp(track, T["track_to_A"], L.ROBOT_HOME_Y, TRACK_A)
+    ramp(track, T["track_to_B1"], TRACK_A, TRACK_B1)
     ramp(track, T["track_to_B2"], TRACK_B1, TRACK_B2)
     ramp(track, T["track_home"], TRACK_B2, L.ROBOT_HOME_Y)
 
-    # ---- robot: IK targets per frame for welding / scanning; joint-space transfers elsewhere
     q_home = np.array(L.ROBOT_Q_HOME, dtype=float)
     cached = None
     if os.path.exists(cache):
         z = np.load(cache)
         cached = dict(Q=z["Q"], arc_on=z["arc_on"], laser_on=z["laser_on"], slots=z["slots"])
-    targets = {}       # frame -> 4x4 TCP target (world)
     weld_beads = []    # (bead_key, slot, (f0, f1))
-
-    def base_at(f):
-        return RB.base_matrix(track[f - 1])
+    targets = {}       # frame -> 4x4 TCP target (world)
 
     if cached is None:
-        # seam A (tilt 90 during the weld)
-        TsA = spool_world(90.0, ROT_A0)
-        sfA = seam_frame("A", TsA)
-        pA, nA, tA = seam_point(sfA, top_angle(sfA))
-        # relative surface motion: the part rotates +rot about +X world (faceplate axis); torch fixed. Travel direction of the
-        # torch relative to the part is opposite to the surface velocity at the top: v_surface = omega x r
-        TA = target_frame(pA, nA, -tA, robot_lean(pA, 0.0), push_deg=10.0)
-        TA_scan = lifted(TA, 0.035)
-        for f in range(T["weld_A"][0], T["weld_A"][1] + 1):
-            w = 0.0025 * math.sin(2 * math.pi * 2.5 * (f - T["weld_A"][0]) / FPS)   # weaving along the seam axis (X)
-            Tw = TA.copy(); Tw[:3, 3] = Tw[:3, 3] + np.array([w, 0, 0])
-            targets[f] = Tw
-        # laser scan: traverse across the seam 35 mm above it
-        a, b = T["laser"]
-        for f in range(a, b + 1):
-            s = frac(f, (a, b))
-            x = -0.06 + 0.12 * (0.5 - 0.5 * math.cos(math.pi * s))          # sweep -60..+60 mm across (along X)
-            Tw = TA_scan.copy(); Tw[:3, 3] = Tw[:3, 3] + np.array([x, 0, 0]); targets[f] = Tw
-            laser_on[f - 1] = 1.0
-        for f in range(T["to_weld_A"][0], T["to_weld_A"][1] + 1):
-            s = smoothstep(frac(f, T["to_weld_A"]))
-            Tw = TA_scan.copy(); Tw[:3, 3] = TA_scan[:3, 3] * (1 - s) + TA[:3, 3] * s + np.array([0.06 * (1 - s), 0, 0]); targets[f] = Tw
-        arc_on[T["arc_A"][0] - 1:T["arc_A"][1]] = 1.0
-        weld_beads.append(("A", 0, T["arc_A"]))
+        Q_REF = np.array([0.0, 0.0, 0.0, 0.0, 1.2, 0.0])      # wrist bent ~70° positive, q4/q6 near zero
 
-        # seam B sectors
-        def sector(span, arc_span, rot_deg, track_y, toward_plus_x, slot):
-            Ts = spool_world(90.0, rot_deg)
-            sf = seam_frame("B", Ts)
-            a_top = top_angle(sf)
-            p5, _, _ = seam_point(sf, a_top + 5.0)
-            sgn = 1.0 if ((p5[0] > sf[0][0]) == toward_plus_x) else -1.0
-            f0, f1 = span
-            for f in range(f0, f1 + 1):
-                s = frac(f, span)
-                ang = a_top + sgn * 92.0 * s
-                p, n, t = seam_point(sf, ang)
-                w = 0.0025 * math.sin(2 * math.pi * 2.5 * (f - f0) / FPS)
-                p = p + w * sf[1]
-                targets[f] = target_frame(p, n, t * sgn, robot_lean(p, track_y), push_deg=10.0)
-            arc_on[arc_span[0] - 1:arc_span[1]] = 1.0
-            weld_beads.append(("B", slot, arc_span))
-            return targets[f0], targets[f1]
+        def base_at(f):
+            return RB.base_matrix(track[f - 1])
 
-        s1_start, s1_end = sector(T["sector1"], T["arc_1"], ROT_A1, TRACK_B1, True, 0)
-        s2_start, s2_end = sector(T["sector2"], T["arc_2"], ROT_A1, TRACK_B1, False, 1)
-        s3_start, s3_end = sector(T["sector3"], T["arc_3"], ROT_B2, TRACK_B2, True, 2)
-        s4_start, s4_end = sector(T["sector4"], T["arc_4"], ROT_B2, TRACK_B2, False, 3)
-
-        # ---- transfers (Cartesian lifts + joint-space moves).  Solve IK for key poses first.
-        Q_REF = np.array([0.0, 0.0, 0.0, 0.0, 1.0, 0.0])      # wrist bent ~57° positive, q4/q6 near zero
         def solve(Tm, q0, f):
             q, ok, err = arm.ik(Tm, q0, base_at(f), TOOL, free_spin=True, q_ref=Q_REF)
             if not ok:
@@ -237,18 +236,82 @@ def build(scene, robot, pos, spool):
             if not ok:
                 IK_FAILS.append((f, err))
             return q
-        # key poses
-        q_appA = solve(lifted(TA, 0.15), q_home, T["robot_to_A"][1])
+
+        # ---------------- seam A: torch static at 12 o'clock, part rotates about +Y (faceplate axis)
+        TsA = spool_world(TILT_B1, ROT_A0)
+        sfA = seam_frame("A", TsA)
+        cA, axA = sfA[0], sfA[1]
+        pA = cA + L.SEAM_RADIUS * np.array([0, 0, 1.0])
+        nA = np.array([0, 0, 1.0])
+        v_surface = np.cross(axA, pA - cA)                     # surface velocity for increasing rot
+        tA = -v_surface / np.linalg.norm(v_surface)            # torch travel relative to the part
+        TA = target_frame(pA, nA, tA, robot_lean(pA, TRACK_A), push_deg=10.0)
+        TA_scan = offset(TA, (0, 0, 0.035))
+        for f in range(T["weld_A"][0], T["weld_A"][1] + 1):
+            w = 0.0025 * math.sin(2 * math.pi * 2.5 * (f - T["weld_A"][0]) / FPS)   # weaving along the seam axis
+            targets[f] = offset(TA, axA * w)
+        a, b = T["laser"]
+        for f in range(a, b + 1):
+            s = frac(f, (a, b))
+            x = -0.06 + 0.12 * (0.5 - 0.5 * math.cos(math.pi * s))          # sweep -60..+60 mm across the joint
+            targets[f] = offset(TA_scan, axA * x)
+            laser_on[f - 1] = 1.0
+        for f in range(T["to_weld_A"][0], T["to_weld_A"][1] + 1):
+            s = smoothstep(frac(f, T["to_weld_A"]))
+            targets[f] = blend_pose(offset(TA_scan, axA * 0.06), TA, s)
+        arc_on[T["arc_A"][0] - 1:T["arc_A"][1]] = 1.0
+        weld_beads.append(("A", 0, T["arc_A"]))
+
+        # ---------------- seam B sectors (pipe along +X); each returns start/end targets and normals
+        def sector(span, arc_span, tilt_deg, track_y, toward_plus_y, slot):
+            Ts = spool_world(tilt_deg, ROT_A1)
+            sf = seam_frame("B", Ts)
+            a_top = top_angle(sf)
+            p5, _, _ = seam_point(sf, a_top + 5.0)
+            sgn = 1.0 if ((p5[1] > sf[0][1]) == toward_plus_y) else -1.0
+            f0, f1 = span
+            info = {}
+            for f in range(f0, f1 + 1):
+                s = frac(f, span)
+                ang = a_top + sgn * (98.0 * s - 4.0)          # -4° .. +94°: sectors overlap at 12, 3 and 9 o'clock
+                p, n, t = seam_point(sf, ang)
+                w = 0.0025 * math.sin(2 * math.pi * 2.5 * (f - f0) / FPS)
+                p = p + w * sf[1]
+                targets[f] = target_frame(p, n, t * sgn, robot_lean(p, track_y), push_deg=10.0)
+                if f == f0:
+                    info["start"] = (targets[f], n)
+                if f == f1:
+                    info["end"] = (targets[f], n)
+            pv, nv, tv = seam_point(sf, a_top + sgn * 45.0)   # via point for the return move (1:30 o'clock, retracted)
+            info["via"] = (target_frame(pv, nv, tv * sgn, robot_lean(pv, track_y), 0.0), nv)
+            arc_on[arc_span[0] - 1:arc_span[1]] = 1.0
+            weld_beads.append(("B", slot, arc_span))
+            return info
+
+        S1 = sector(T["sector1"], T["arc_1"], TILT_B1, TRACK_B1, False, 0)
+        S2 = sector(T["sector2"], T["arc_2"], TILT_B1, TRACK_B1, True, 1)
+        S3 = sector(T["sector3"], T["arc_3"], TILT_B2, TRACK_B2, False, 2)
+        S4 = sector(T["sector4"], T["arc_4"], TILT_B2, TRACK_B2, True, 3)
+
+        def radial(info_key, info, d):
+            Tm, n = info[info_key]
+            return offset(Tm, n * d)
+
+        # ---------------- transit (park) pose: torch down, tip at TRANSIT_TCP, outside the part sweep
+        def transit_target(track_y):
+            p = np.array([TRANSIT_TCP[0], track_y, TRANSIT_TCP[1]])
+            return target_frame(p, np.array([0, 0, 1.0]), np.array([1.0, 0, 0]), np.array([1.0, 0, 0.9]), 0.0)
+        q_transit = solve(transit_target(TRACK_A), q_home, T["to_transit_A"][1])
+
+        # ---------------- key poses
+        q_appA = solve(offset(TA, (0, 0, 0.15)), q_transit, T["robot_to_A"][1])
         q_scan0 = solve(targets[T["laser"][0]], q_appA, T["laser"][0])
-        q_liftA = solve(lifted(TA, 0.15), q_appA, T["lift_A"][1])
-        q_appB1 = solve(lifted(s1_start, 0.12), q_liftA, T["robot_to_B1"][1])
-        q_s1_lift = solve(lifted(s1_end, 0.06), q_appB1, T["back_to_top1"][0])
-        q_s2_app = solve(lifted(s2_start, 0.06), q_s1_lift, T["back_to_top1"][1])
-        q_s2_lift = solve(lifted(s2_end, 0.15), q_s2_app, T["lift_B1"][1])
-        q_appB2 = solve(lifted(s3_start, 0.12), q_appB1, T["robot_to_B2"][1])
-        q_s3_lift = solve(lifted(s3_end, 0.06), q_appB2, T["back_to_top2"][0])
-        q_s4_app = solve(lifted(s4_start, 0.06), q_s3_lift, T["back_to_top2"][1])
-        q_s4_lift = solve(lifted(s4_end, 0.15), q_s4_app, T["lift_B2"][1])
+        q_appB1 = solve(radial("start", S1, LIFT_APPROACH), q_transit, T["robot_to_B1"][1])
+        q_via1 = solve(radial("via", S1, 0.16), q_appB1, T["back_to_top1"][0] + 12)
+        q_s2_app = solve(radial("start", S2, LIFT_APPROACH), q_via1, T["back_to_top1"][1])
+        q_appB2 = solve(radial("start", S3, LIFT_APPROACH), q_transit, T["robot_to_B2"][1])
+        q_via2 = solve(radial("via", S3, 0.16), q_appB2, T["back_to_top2"][0] + 12)
+        q_s4_app = solve(radial("start", S4, LIFT_APPROACH), q_via2, T["back_to_top2"][1])
 
         def joint_move(span, q0, q1, via=None):
             a, b = span
@@ -257,64 +320,64 @@ def build(scene, robot, pos, spool):
                 s = smoothstep(frac(f, span)) * (len(pts) - 1)
                 i = min(int(s), len(pts) - 2); u = s - i
                 Q[f - 1] = pts[i] * (1 - u) + pts[i + 1] * u
+
         def cart_move(span, T0, T1, q_seed):
             a, b = span
             q = q_seed
             for f in range(a, b + 1):
-                s = smoothstep(frac(f, span))
-                Tm = T0.copy(); Tm[:3, 3] = T0[:3, 3] * (1 - s) + T1[:3, 3] * s
-                # slerp-free orientation blend: use T0 orientation for s<0.5 else T1 (close anyway)
-                Tm[:3, :3] = T0[:3, :3] if s < 0.5 else T1[:3, :3]
-                q = solve(Tm, q, f); Q[f - 1] = q
+                q = solve(blend_pose(T0, T1, smoothstep(frac(f, span))), q, f); Q[f - 1] = q
             return q
+
         def hold(span, q):
             a, b = span; Q[a - 1:b] = q
 
-        # rest
-        hold((1, T["robot_to_A"][0]), q_home)
-        joint_move(T["robot_to_A"], q_home, q_appA)
-        hold((T["robot_to_A"][1], T["laser"][0]), q_appA)
-        # scan + weld A: per-frame IK
-        q = q_appA
-        for f in range(T["laser"][0] - 2, T["weld_A"][1] + 1):
-            if f in targets:
+        def track_seg(span, q):
+            """per-frame IK on `targets` for a welding/scanning span, warm-started from q."""
+            for f in range(span[0], span[1] + 1):
                 q = solve(targets[f], q, f); Q[f - 1] = q
-            elif f < T["laser"][0]:
-                # descend from approach to scan start
-                s = smoothstep(frac(f, (T["laser"][0] - 2, T["laser"][0])))
-                Q[f - 1] = q_appA * (1 - s) + q_scan0 * s
-        q_weldA_end = Q[T["weld_A"][1] - 1]
-        cart_move(T["lift_A"], targets[T["weld_A"][1]], lifted(TA, 0.15), q_weldA_end)
-        joint_move(T["robot_to_B1"], Q[T["lift_A"][1] - 1], q_appB1)
-        # sector 1
-        q = cart_move((T["sector1"][0] - 3, T["sector1"][0]), lifted(s1_start, 0.12), s1_start, q_appB1)
-        for f in range(T["sector1"][0], T["sector1"][1] + 1):
-            q = solve(targets[f], q, f); Q[f - 1] = q
-        q = cart_move((T["back_to_top1"][0], T["back_to_top1"][0] + 6), s1_end, lifted(s1_end, 0.06), q)
-        joint_move((T["back_to_top1"][0] + 6, T["back_to_top1"][1] - 4), q, q_s2_app)
-        q = cart_move((T["back_to_top1"][1] - 4, T["back_to_top1"][1]), lifted(s2_start, 0.06), s2_start, q_s2_app)
-        for f in range(T["sector2"][0], T["sector2"][1] + 1):
-            q = solve(targets[f], q, f); Q[f - 1] = q
-        q = cart_move(T["lift_B1"], s2_end, lifted(s2_end, 0.15), q)
-        hold((T["lift_B1"][1], T["robot_to_B2"][0]), q)
-        joint_move(T["robot_to_B2"], q, q_appB2)
-        q = cart_move((T["sector3"][0] - 3, T["sector3"][0]), lifted(s3_start, 0.12), s3_start, q_appB2)
-        for f in range(T["sector3"][0], T["sector3"][1] + 1):
-            q = solve(targets[f], q, f); Q[f - 1] = q
-        q = cart_move((T["back_to_top2"][0], T["back_to_top2"][0] + 6), s3_end, lifted(s3_end, 0.06), q)
-        joint_move((T["back_to_top2"][0] + 6, T["back_to_top2"][1] - 4), q, q_s4_app)
-        q = cart_move((T["back_to_top2"][1] - 4, T["back_to_top2"][1]), lifted(s4_start, 0.06), s4_start, q_s4_app)
-        for f in range(T["sector4"][0], T["sector4"][1] + 1):
-            q = solve(targets[f], q, f); Q[f - 1] = q
-        q = cart_move(T["lift_B2"], s4_end, lifted(s4_end, 0.15), q)
+            return q
+
+        # ---------------- sequence
+        hold((1, T["robot_to_A"][0]), q_home)
+        joint_move(T["robot_to_A"], q_home, q_appA, via=[q_transit])
+        hold((T["robot_to_A"][1], T["laser"][0] - 2), q_appA)
+        for f in range(T["laser"][0] - 2, T["laser"][0]):
+            s = smoothstep(frac(f, (T["laser"][0] - 2, T["laser"][0])))
+            Q[f - 1] = q_appA * (1 - s) + q_scan0 * s
+        q = track_seg((T["laser"][0], T["weld_A"][1]), q_appA)
+        q = cart_move(T["lift_A"], targets[T["weld_A"][1]], offset(TA, (0, 0, 0.15)), q)
+        joint_move(T["to_transit_A"], q, q_transit)
+        hold((T["to_transit_A"][1], T["robot_to_B1"][0]), q_transit)
+        joint_move(T["robot_to_B1"], q_transit, q_appB1)
+        q = cart_move((T["robot_to_B1"][1], T["sector1"][0]), radial("start", S1, LIFT_APPROACH), S1["start"][0], q_appB1)
+        q = track_seg(T["sector1"], q)
+        a, b = T["back_to_top1"]
+        q = cart_move((a, a + 6), S1["end"][0], radial("end", S1, LIFT_APPROACH), q)
+        joint_move((a + 6, b - 4), q, q_s2_app, via=[q_via1])
+        q = cart_move((b - 4, T["sector2"][0]), radial("start", S2, LIFT_APPROACH), S2["start"][0], q_s2_app)
+        q = track_seg(T["sector2"], q)
+        q = cart_move(T["lift_B1"], S2["end"][0], radial("end", S2, LIFT_PARK), q)
+        joint_move(T["to_transit_B1"], q, q_transit)
+        hold((T["to_transit_B1"][1], T["robot_to_B2"][0]), q_transit)
+        joint_move(T["robot_to_B2"], q_transit, q_appB2)
+        q = cart_move((T["robot_to_B2"][1], T["sector3"][0]), radial("start", S3, LIFT_APPROACH), S3["start"][0], q_appB2)
+        q = track_seg(T["sector3"], q)
+        a, b = T["back_to_top2"]
+        q = cart_move((a, a + 6), S3["end"][0], radial("end", S3, LIFT_APPROACH), q)
+        joint_move((a + 6, b - 4), q, q_s4_app, via=[q_via2])
+        q = cart_move((b - 4, T["sector4"][0]), radial("start", S4, LIFT_APPROACH), S4["start"][0], q_s4_app)
+        q = track_seg(T["sector4"], q)
+        q = cart_move(T["lift_B2"], S4["end"][0], radial("end", S4, LIFT_PARK), q)
+        q = cart_move(T["to_transit_B2"], radial("end", S4, LIFT_PARK), transit_target(TRACK_B2), q)
         joint_move(T["robot_home"], q, q_home)
         hold((T["robot_home"][1], nF), q_home)
 
         np.savez(cache, Q=Q, arc_on=arc_on, laser_on=laser_on,
-                 slots=np.array([[ {"A": 0, "B": 1}[k], sl, sp[0], sp[1]] for (k, sl, sp) in weld_beads]))
+                 slots=np.array([[{"A": 0, "B": 1}[k], sl, sp[0], sp[1]] for (k, sl, sp) in weld_beads]))
     else:
         Q[:] = cached["Q"]; arc_on[:] = cached["arc_on"]; laser_on[:] = cached["laser_on"]
         weld_beads = [("AB"[int(r[0])], int(r[1]), (int(r[2]), int(r[3]))) for r in cached["slots"]]
+
     # ---- keyframe everything
     for i, f in enumerate(frames):
         P.set_tilt(pos, tilt[i], frame=int(f))
@@ -370,7 +433,8 @@ def build(scene, robot, pos, spool):
             tint.keyframe_insert('["tint_on"]', frame=f0)
             tint["tint_on"] = 1.0; tint.keyframe_insert('["tint_on"]', frame=f1); _linear(tint)
     scene.frame_set(1)
-    return dict(weld_intervals=weld_intervals, laser_intervals=laser_intervals, arc=arc, frames=nF, Q=Q, track=track, tilt=tilt, rot=rot, timeline=T)
+    return dict(weld_intervals=weld_intervals, laser_intervals=laser_intervals, arc=arc, frames=nF, Q=Q,
+                track=track, tilt=tilt, rot=rot, timeline=T)
 
 
 def _linear(ob):
@@ -392,15 +456,18 @@ def _constant(ob):
 # ------------------------------------------------------------------ cameras
 SHOTS = [
     # (name, f0, f1, cam_from, cam_to, aim_from, aim_to, lens_mm, fstop)
-    ("C1_wide", 1, 96, (-3.6, -6.4, 3.4), (-2.9, -5.8, 3.15), (0.9, 0.0, 1.15), (0.9, 0.0, 1.2), 32, 0),
-    ("C2_setup", 97, 192, (3.6, -3.8, 2.3), (3.1, -3.1, 2.05), (0.7, -0.3, 1.35), (0.5, 0.0, 1.45), 35, 0),
-    ("C3_closeA", 193, 330, (1.45, -1.15, 1.85), (1.25, -0.95, 1.78), (0.40, 0.0, 1.47), (0.40, 0.0, 1.47), 60, 5.6),
-    ("C4_midA", 331, 456, (1.9, 1.7, 1.55), (2.1, 1.35, 1.65), (0.55, 0.0, 1.45), (0.55, 0.0, 1.45), 45, 8.0),
-    ("C5_reposition", 457, 528, (2.9, -2.3, 2.5), (2.6, -2.0, 2.3), (0.8, 0.2, 1.45), (0.8, 0.4, 1.45), 35, 0),
-    ("C6_closeB1", 529, 696, (1.55, -0.95, 1.95), (1.4, -0.8, 1.9), (0.74, 0.38, 1.45), (0.74, 0.38, 1.45), 55, 6.3),
-    ("C7_index", 697, 768, (-1.3, -3.5, 2.6), (-0.9, -3.15, 2.45), (0.55, 0.1, 1.25), (0.6, -0.1, 1.25), 32, 0),
-    ("C8_closeB2", 769, 888, (1.55, 0.95, 1.95), (1.4, 0.8, 1.9), (0.74, -0.38, 1.45), (0.74, -0.38, 1.45), 55, 6.3),
-    ("C9_final", 889, 1008, (3.9, -5.8, 3.1), (3.4, -5.1, 2.9), (0.4, -0.3, 1.25), (0.35, -0.2, 1.3), 32, 0),
+    ("C1_wide", 1, 96, (-4.6, -7.2, 4.0), (-3.9, -6.4, 3.7), (0.9, 0.0, 1.1), (0.9, 0.0, 1.1), 28, 0),
+    ("C2_setup", 97, 192, (-0.2, 3.1, 2.5), (0.2, 2.7, 2.35), (0.6, 0.2, 1.35), (0.5, 0.2, 1.4), 30, 0),
+    ("C3a_laser", 193, 240, (0.75, 1.55, 1.95), (0.70, 1.50, 1.90), (0.0, 0.40, 1.47), (0.0, 0.40, 1.47), 85, 4.0),
+    ("C3b_closeA", 241, 300, (0.9, 1.35, 2.0), (0.8, 1.25, 1.95), (0.0, 0.40, 1.47), (0.0, 0.40, 1.47), 60, 5.6),
+    ("C4_midA", 301, 456, (1.4, 0.95, 2.8), (1.3, 0.75, 2.75), (0.05, 0.42, 1.45), (0.05, 0.42, 1.45), 45, 8.0),
+    ("C5_reposition", 457, 540, (4.4, -3.2, 3.4), (4.0, -2.6, 3.2), (1.4, 0.3, 1.0), (1.4, 0.6, 1.0), 30, 0),
+    ("C6a_closeB1", 541, 648, (1.3, -0.55, 2.05), (1.2, -0.45, 2.0), (0.42, 0.76, 1.42), (0.42, 0.76, 1.42), 42, 6.3),
+    ("C6b_closeB1", 649, 708, (1.3, 2.05, 2.05), (1.2, 1.95, 2.0), (0.42, 0.76, 1.42), (0.42, 0.76, 1.42), 42, 6.3),
+    ("C7_index", 709, 810, (-3.4, -1.8, 2.4), (-3.0, -1.2, 2.3), (0.4, 0.0, 1.4), (0.4, 0.0, 1.4), 32, 0),
+    ("C8a_closeB2", 811, 888, (1.3, -2.05, 2.05), (1.2, -1.95, 2.0), (0.42, -0.76, 1.42), (0.42, -0.76, 1.42), 42, 6.3),
+    ("C8b_closeB2", 889, 930, (1.3, 0.55, 2.05), (1.2, 0.45, 2.0), (0.42, -0.76, 1.42), (0.42, -0.76, 1.42), 42, 6.3),
+    ("C9_final", 931, 1104, (5.4, -6.2, 4.0), (4.6, -5.2, 3.4), (0.8, -0.2, 1.1), (0.8, -0.2, 1.1), 30, 0),
 ]
 
 
