@@ -197,8 +197,36 @@ def _tint_base_color(nt, bsdf, mask, color):
     nt.links.new(mix.outputs[2], bsdf.inputs["Base Color"])
 
 
+def _world_z(nt):
+    """World-space Z of the shading point (so gradients line up across separately placed objects)."""
+    geo = nt.nodes.new("ShaderNodeNewGeometry")
+    sep = nt.nodes.new("ShaderNodeSeparateXYZ")
+    nt.links.new(geo.outputs["Position"], sep.inputs[0])
+    return sep
+
+
+def _scale_base_color(nt, bsdf, color, ref):
+    """The shared materials drive Base Color from a texture chain, so setting the socket default is a no-op:
+    multiply whatever feeds it by color/ref instead (ref ~ the chain's mean value)."""
+    src = None
+    for lk in nt.links:
+        if lk.to_socket == bsdf.inputs["Base Color"]:
+            src = lk.from_socket
+    if src is None:
+        bsdf.inputs["Base Color"].default_value = (*color, 1)
+        return
+    mix = nt.nodes.new("ShaderNodeMix")
+    mix.data_type = 'RGBA'
+    mix.blend_type = 'MULTIPLY'
+    mix.inputs[0].default_value = 1.0
+    nt.links.new(src, mix.inputs[6])
+    mix.inputs[7].default_value = (color[0] / ref, color[1] / ref, color[2] / ref, 1)
+    nt.links.new(mix.outputs[2], bsdf.inputs["Base Color"])
+
+
 def _mat_floor():
-    """Concrete with 6 m expansion-joint grid, tyre streaks and a darker worn zone around the cell."""
+    """Dark, dusty shop concrete: 6 m expansion-joint grid, tyre / grinding-dust streaks, lighter dust drifts and a
+    darker worn zone around the cell (the reference photos: brownish-grey, no clean white patches)."""
     key = "env_floor"
     m = bpy.data.materials.get(key)
     if m:
@@ -206,29 +234,44 @@ def _mat_floor():
     m = materials.get("concrete").copy()
     m.name = key
     nt, bsdf = _nodes(m)
-    bsdf.inputs["Base Color"].default_value = (0.115, 0.108, 0.10, 1)
-    bsdf.inputs["Roughness"].default_value = 0.72
-    bsdf.inputs["Specular IOR Level"].default_value = 0.2
+    _scale_base_color(nt, bsdf, (0.095, 0.088, 0.08), 0.36)     # concrete chain averages ~0.36
+    bsdf.inputs["Roughness"].default_value = 0.78
+    bsdf.inputs["Specular IOR Level"].default_value = 0.18
     sep = _sep_object_coords(nt)
-    # tyre / dirt streaks stretched along X
-    streak = nt.nodes.new("ShaderNodeTexNoise")
-    streak.inputs["Scale"].default_value = 1.0
-    streak.inputs["Detail"].default_value = 3.0
-    comb = nt.nodes.new("ShaderNodeCombineXYZ")
-    nt.links.new(_math(nt, 'MULTIPLY', sep.outputs["X"], 0.25), comb.inputs["X"])
-    nt.links.new(_math(nt, 'MULTIPLY', sep.outputs["Y"], 3.0), comb.inputs["Y"])
-    nt.links.new(comb.outputs[0], streak.inputs["Vector"])
-    smask = _math(nt, 'MULTIPLY', _math(nt, 'GREATER_THAN', streak.outputs["Fac"], 0.54), 0.45)
-    _tint_base_color(nt, bsdf, smask, (0.07, 0.065, 0.06))
+
+    def streaks(name, sx, sy, scale, thresh, amount, color):
+        n = nt.nodes.new("ShaderNodeTexNoise")
+        n.label = name
+        n.inputs["Scale"].default_value = scale
+        n.inputs["Detail"].default_value = 3.0
+        comb = nt.nodes.new("ShaderNodeCombineXYZ")
+        nt.links.new(_math(nt, 'MULTIPLY', sep.outputs["X"], sx), comb.inputs["X"])
+        nt.links.new(_math(nt, 'MULTIPLY', sep.outputs["Y"], sy), comb.inputs["Y"])
+        nt.links.new(comb.outputs[0], n.inputs["Vector"])
+        mask = _math(nt, 'MULTIPLY', _math(nt, 'GREATER_THAN', n.outputs["Fac"], thresh), amount)
+        _tint_base_color(nt, bsdf, mask, color)
+
+    # tyre / drag streaks along X (forklift aisle direction) and a finer set along Y, dark grinding-dust smears
+    streaks("tyre_x", 0.25, 3.0, 1.0, 0.50, 0.55, (0.055, 0.05, 0.045))
+    streaks("tyre_y", 3.0, 0.3, 1.3, 0.56, 0.45, (0.06, 0.055, 0.05))
+    streaks("grind", 1.0, 1.0, 2.2, 0.60, 0.35, (0.05, 0.048, 0.045))
+    # lighter grey dust drifts (large blotches)
+    streaks("dust", 1.0, 1.0, 0.35, 0.55, 0.45, (0.15, 0.14, 0.125))
+    # worn / dirtier zone around the cell (radius ~6 m, soft edge, noise-broken)
+    dx = _math(nt, 'SUBTRACT', sep.outputs["X"], 0.8)
+    dist = _math(nt, 'SQRT', _math(nt, 'ADD', _math(nt, 'MULTIPLY', dx, dx), _math(nt, 'MULTIPLY', sep.outputs["Y"], sep.outputs["Y"])))
+    worn = _math(nt, 'MULTIPLY', _math(nt, 'SUBTRACT', 1.0, _math(nt, 'DIVIDE', dist, 7.0), clamp=True), 0.5)
+    _tint_base_color(nt, bsdf, worn, (0.06, 0.055, 0.05))
     # expansion joints
     joints = _math(nt, 'MAXIMUM', _line_mask(nt, sep.outputs["X"], L.COLUMN_SPACING, 0.014),
                    _line_mask(nt, sep.outputs["Y"], L.COLUMN_SPACING, 0.014))
-    _tint_base_color(nt, bsdf, joints, (0.06, 0.055, 0.05))
+    _tint_base_color(nt, bsdf, joints, (0.04, 0.037, 0.034))
     return m
 
 
 def _mat_wall():
-    """Corrugated grey sandwich panel: vertical ribs (bump along local X) + horizontal panel seams."""
+    """Corrugated grey sandwich panel: vertical ribs (bump along local X), faint horizontal panel seams and a
+    dirt / scuff gradient on the lower panels (world Z below ~1.5 m above the plinth)."""
     key = "env_wall"
     m = bpy.data.materials.get(key)
     if m:
@@ -236,18 +279,31 @@ def _mat_wall():
     m = materials.get("wall_panel").copy()
     m.name = key
     nt, bsdf = _nodes(m)
-    bsdf.inputs["Base Color"].default_value = (0.47, 0.49, 0.50, 1)
-    bsdf.inputs["Roughness"].default_value = 0.55
+    for n in nt.nodes:                       # _noise_variation keeps the base colour in an RGB node
+        if n.type == 'RGB':
+            n.outputs[0].default_value = (0.40, 0.41, 0.42, 1)
+    bsdf.inputs["Base Color"].default_value = (0.40, 0.41, 0.42, 1)
+    bsdf.inputs["Roughness"].default_value = 0.58
     sep = _sep_object_coords(nt)
     tri = _math(nt, 'ABSOLUTE', _math(nt, 'SUBTRACT', _math(nt, 'FRACT', _math(nt, 'DIVIDE', sep.outputs["X"], 0.25)), 0.5))
     trap = _math(nt, 'MULTIPLY', _math(nt, 'SUBTRACT', tri, 0.15), 5.0, clamp=True)      # trapezoid rib profile
     bump = nt.nodes.new("ShaderNodeBump")
-    bump.inputs["Strength"].default_value = 0.8
+    bump.inputs["Strength"].default_value = 0.35
     bump.inputs["Distance"].default_value = 0.03
     nt.links.new(trap, bump.inputs["Height"])
     nt.links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
-    seams = _line_mask(nt, sep.outputs["Z"], 1.0, 0.012)
-    _tint_base_color(nt, bsdf, seams, (0.22, 0.23, 0.24))
+    wz = _world_z(nt)
+    seams = _line_mask(nt, wz.outputs["Z"], 1.0, 0.012)
+    _tint_base_color(nt, bsdf, seams, (0.38, 0.40, 0.41))
+    # dirt gradient: full below 1.5 m above the plinth, fading out over the next 1.3 m, broken up by noise
+    grad = _math(nt, 'SUBTRACT', 1.0, _math(nt, 'DIVIDE', _math(nt, 'SUBTRACT', wz.outputs["Z"], 1.5), 1.3), clamp=True)
+    noise = nt.nodes.new("ShaderNodeTexNoise")
+    noise.inputs["Scale"].default_value = 0.6
+    noise.inputs["Detail"].default_value = 5.0
+    tc = nt.nodes.new("ShaderNodeTexCoord")
+    nt.links.new(tc.outputs["Object"], noise.inputs["Vector"])
+    dirt = _math(nt, 'MULTIPLY', grad, _math(nt, 'ADD', 0.35, _math(nt, 'MULTIPLY', noise.outputs["Fac"], 0.5)), clamp=True)
+    _tint_base_color(nt, bsdf, dirt, (0.22, 0.21, 0.20))
     return m
 
 
@@ -303,8 +359,8 @@ def _mats():
         green_btn=materials.get("painted", color="#2ECC40", roughness=0.3, coat=0.4),
         white_btn=materials.get("painted", color="#E8E8E8", roughness=0.3, coat=0.4),
         lamp=materials.get("emissive", color="#FFE9C8", strength=30.0),
-        skylight=materials.get("emissive", color="#DDE9FF", strength=5.0),
-        window=materials.get("emissive", color="#E6EEFF", strength=4.0),
+        skylight=materials.get("emissive", color="#DDE9FF", strength=3.0),
+        window=materials.get("emissive", color="#E6EEFF", strength=2.5),
         red_led=materials.get("emissive", color="#FF2010", strength=12.0),
         green_led=materials.get("emissive", color="#30FF40", strength=8.0),
         curtain=materials.get("painted", color="#7A1C1C", roughness=0.7, coat=0.0),
@@ -630,33 +686,64 @@ def _wire_drum(b, M):
     _box(b, "env_drum_pallet", (0.7, 0.7, 0.10), (px, py, 0.05), M["wood"])
     _rev(b, "env_drum_hood", [(0, 0), (r + 0.02, 0), (r + 0.02, 0.05), (0.12, 0.2), (0.05, 0.22), (0, 0.22)], M["black"],
          (px, py, h), segs=40)
-    # conduit: up from the hood, then a bend toward the track carriage
+    # wire conduit: up from the hood, over a low bend and down into the cable tray (no tall hook / lamp post)
     zc = h + 0.22
     conduit = M["cable"]
-    _rod(b, "env_drum_conduit_up", 0.02, 1.0, conduit, (px, py, zc + 0.5), segs=12)
-    bend = G.torus_sweep("env_drum_conduit_bend", 0.35, math.pi / 2, lambda t: [0.02], seg_bend=12, seg_tube=12, collection=b.col)
-    bend.location = (px, py, zc + 1.0)
+    rb = 0.22
+    zt = zc + 0.45                                    # top of the vertical run (~1.5 m)
+    _rod(b, "env_drum_conduit_up", 0.02, zt - zc, conduit, (px, py, (zc + zt) / 2), segs=12)
+    bend = G.torus_sweep("env_drum_conduit_bend", rb, math.pi / 2, lambda t: [0.02], seg_bend=12, seg_tube=12, collection=b.col)
+    bend.location = (px, py, zt)
     bend.rotation_euler = (0, 0, math.pi)             # bend toward -X
     b.reg(bend, conduit)
-    _rod(b, "env_drum_conduit_out", 0.02, 0.35, conduit, (px - 0.35 - 0.175, py, zc + 1.35), (0, math.pi / 2, 0), 12)
-    _box(b, "env_drum_conduit_clamp", (0.05, 0.05, 0.05), (px - 0.7, py, zc + 1.35), M["dark"])
-    _box(b, "env_drum_conduit_post", (0.04, 0.04, zc + 1.35), (px - 0.7, py + 0.15, (zc + 1.35) / 2), M["dark"])
-    _box(b, "env_drum_conduit_arm", (0.04, 0.3, 0.04), (px - 0.7, py + 0.02, zc + 1.35 + 0.04), M["dark"])
+    xd = 2.85                                         # descent into the cable tray centre line (see _cable_management)
+    run = px - rb - (xd + rb)
+    _rod(b, "env_drum_conduit_out", 0.02, run, conduit, (px - rb - run / 2, py, zt + rb), (0, math.pi / 2, 0), 12)
+    # second bend traversed backwards: unrotated sweep from (xd, zt) heading +Z ends at (xd + rb, zt + rb) heading +X
+    bend2 = G.torus_sweep("env_drum_conduit_bend2", rb, math.pi / 2, lambda t: [0.02], seg_bend=12, seg_tube=12, collection=b.col)
+    bend2.location = (xd, py, zt)
+    b.reg(bend2, conduit)
+    _rod(b, "env_drum_conduit_down", 0.02, zt - 0.08, conduit, (xd, py, (zt + 0.08) / 2), segs=12)
+    _box(b, "env_drum_conduit_clamp", (0.05, 0.05, 0.05), (px, py, zc + 0.02), M["dark"])
 
 
 def _torch_cleaner(b, M):
+    """Compact torch-cleaning station: grey reamer box on a short pedestal, red wire-cutter guard, anti-spatter
+    spray can in a holder, pneumatic hose down to the cable tray.  Top of the box = TORCH_CLEANER height."""
     (px, py, _), h = L.TORCH_CLEANER["pos"], L.TORCH_CLEANER["height"]
-    _box(b, "env_tc_base", (0.26, 0.26, 0.02), (px, py, 0.01), M["dark"])
-    _box(b, "env_tc_column", (0.10, 0.10, h - 0.25), (px, py, (h - 0.25) / 2 + 0.02), M["cabinet_dark"])
-    _box(b, "env_tc_box", (0.32, 0.24, 0.22), (px, py, h - 0.12), M["yellow"])
-    _rod(b, "env_tc_motor", 0.045, 0.16, M["cabinet_dark"], (px + 0.06, py, h + 0.08), segs=20)   # reamer motor
-    _rev(b, "env_tc_reamer", [(0, 0), (0.012, 0), (0.006, 0.05), (0, 0.05)], M["steel"], (px + 0.06, py, h + 0.16), segs=12)
-    _rod(b, "env_tc_spray", 0.03, 0.10, M["black"], (px - 0.08, py + 0.02, h + 0.05), segs=16)      # anti-spatter spray unit
-    _box(b, "env_tc_cutter", (0.10, 0.06, 0.06), (px - 0.09, py - 0.11, h + 0.03), M["cabinet_dark"])  # wire cutter
-    _box(b, "env_tc_cutter_slot", (0.03, 0.02, 0.012), (px - 0.09, py - 0.145, h + 0.03), M["dark"])
-    _box(b, "env_tc_vprism", (0.05, 0.04, 0.03), (px + 0.06, py - 0.08, h + 0.015), M["steel"])
-    _box(b, "env_tc_lever", (0.012, 0.012, 0.16), (px + 0.15, py + 0.1, h + 0.07), M["red"])
-    _bar(b, "env_tc_hose", (px - 0.16, py + 0.05, h - 0.1), (px - 0.4, py - 0.3, 0.05), 0, M["cable"], radius=0.008, segs=8)
+    bx, by, bz = 0.40, 0.30, 0.40                     # reamer box
+    zp = h - bz                                       # pedestal top
+    grey = M["cabinet"]
+    _box(b, "env_tc_base", (0.30, 0.30, 0.02), (px, py, 0.01), M["dark"])
+    _box(b, "env_tc_pedestal", (0.16, 0.16, zp - 0.02), (px, py, (zp - 0.02) / 2 + 0.02), M["cabinet_dark"])
+    _box(b, "env_tc_box", (bx, by, bz), (px, py, zp + bz / 2), grey)
+    _box(b, "env_tc_box_lid", (bx - 0.02, by - 0.02, 0.012), (px, py, h + 0.006), M["cabinet_dark"])
+    # reamer opening (dark disc in the lid) with the reamer bit and V-clamp jaws either side of it
+    rx, ry = px + 0.08, py
+    _rev(b, "env_tc_ream_hole", [(0, 0), (0.045, 0), (0.045, 0.002), (0, 0.002)], M["black"], (rx, ry, h + 0.012), segs=20, smooth=False)
+    _rev(b, "env_tc_reamer", [(0, 0), (0.010, 0), (0.010, 0.03), (0.005, 0.045), (0, 0.045)], M["steel"], (rx, ry, h + 0.012), segs=12)
+    for k, s_ in enumerate((-1, 1)):
+        _box(b, f"env_tc_jaw_{k}", (0.05, 0.03, 0.03), (rx, ry + s_ * 0.06, h + 0.027), M["steel"])
+    # wire cutter: red guard block with a horizontal blade slot on the -Y face of the lid
+    cx, cy = px - 0.10, py - 0.05
+    _box(b, "env_tc_cutter", (0.12, 0.10, 0.06), (cx, cy, h + 0.042), M["red"])
+    _box(b, "env_tc_cutter_slot", (0.045, 0.02, 0.006), (cx, cy - 0.05, h + 0.045), M["black"])
+    _rod(b, "env_tc_cutter_cyl", 0.02, 0.06, M["cabinet_dark"], (cx, cy + 0.08, h + 0.042), (math.pi / 2, 0, 0), 14)   # pneumatic cylinder
+    # anti-spatter spray can in a clip on the +Y side of the box, spray nozzle block next to the reamer
+    sx_, sy_ = px + 0.10, py + by / 2 + 0.04
+    _box(b, "env_tc_can_clip", (0.09, 0.04, 0.05), (sx_, py + by / 2 + 0.02, zp + 0.28), M["cabinet_dark"])
+    _rev(b, "env_tc_can", [(0, 0), (0.033, 0), (0.033, 0.14), (0.028, 0.15), (0.012, 0.15), (0.012, 0.165), (0, 0.165)], M["white_btn"],
+         (sx_, sy_, zp + 0.14), segs=20)
+    _box(b, "env_tc_can_label", (0.068, 0.068, 0.07), (sx_, sy_, zp + 0.21), M["red"])
+    _box(b, "env_tc_spray", (0.04, 0.03, 0.03), (rx - 0.08, ry + 0.03, h + 0.027), M["black"])
+    # controls: two push buttons + a status LED on the -X face (facing the robot side), hose to the tray
+    xf = px - bx / 2
+    _rod(b, "env_tc_btn_g", 0.011, 0.02, M["green_btn"], (xf - 0.005, py - 0.06, zp + 0.30), (0, math.pi / 2, 0), 12)
+    _rod(b, "env_tc_btn_r", 0.011, 0.02, M["red"], (xf - 0.005, py - 0.10, zp + 0.30), (0, math.pi / 2, 0), 12)
+    _box(b, "env_tc_led", (0.006, 0.02, 0.01), (xf - 0.003, py + 0.06, zp + 0.32), M["green_led"])
+    _box(b, "env_tc_gland", (0.03, 0.03, 0.03), (px, py + by / 2 + 0.015, zp + 0.06), M["black"])
+    _bar(b, "env_tc_hose", (px, py + by / 2 + 0.03, zp + 0.06), (px + 0.35, py - 0.05, 0.05), 0, M["cable"], radius=0.008, segs=8)
+    _bar(b, "env_tc_hose2", (px + 0.35, py - 0.05, 0.05), (2.8, py + 0.1, 0.05), 0, M["cable"], radius=0.008, segs=8)
 
 
 def _fume_hood(b, M):
@@ -713,9 +800,16 @@ def _cable_management(b, M):
             ((ps[0] - 0.1, ps[1] - 0.35, 0.9), (dr[0] - 0.1, dr[1] + 0.32, L.WIRE_DRUM["height"] + 0.15), 0.008),
             ((cab[0] - 0.36, cab[1] + 0.1, 0.9), (cab[0] - 0.36, ps[1] + 0.35, 0.9), 0.008))):
         _bar(b, f"env_cable_{k}", p0, p1, 0, M["cable"], radius=r, segs=8)
-    # floor cable bridge (yellow ramp) where cables cross the walkway to the door side
-    _box(b, "env_cable_bridge", (0.5, 0.9, 0.05), (3.3, -1.0, 0.025), M["yellow"])
-    _box(b, "env_cable_bridge_dark", (0.16, 0.9, 0.052), (3.3, -1.0, 0.026), M["black"])
+    # floor cable bridge (yellow ramp) where two cables leave the tray toward a socket box at the fence line;
+    # centred between the east fence posts (y = -0.68 / -2.04) and clear of the tray
+    bxc, byc = 3.45, -1.36
+    _box(b, "env_cable_bridge", (0.5, 0.9, 0.05), (bxc, byc, 0.025), M["yellow"])
+    _box(b, "env_cable_bridge_dark", (0.16, 0.9, 0.052), (bxc, byc, 0.026), M["black"])
+    fx = L.FENCE_X[1]
+    _box(b, "env_socket_box", (0.16, 0.22, 0.14), (fx - 0.16, byc, 0.07), M["cabinet_dark"])
+    _box(b, "env_socket_box_lid", (0.14, 0.20, 0.01), (fx - 0.16, byc, 0.145), M["cabinet"])
+    for k, (dy, r) in enumerate(((-0.08, 0.012), (0.08, 0.009))):
+        _bar(b, f"env_bridge_cable_{k}", (xt + 0.06, byc + dy, 0.02), (fx - 0.25, byc + dy, 0.02), 0, M["cable"], radius=r, segs=8)
 
 
 def _flange(b, M, name, ro, ri, rf, thk, hub, center, rotation=(0, 0, 0), segs=40, holes=8):
@@ -928,18 +1022,20 @@ def build_lighting(scene):
     world = bpy.data.worlds.get("HallWorld") or bpy.data.worlds.new("HallWorld")
     world.use_nodes = True
     bg = world.node_tree.nodes["Background"]
-    bg.inputs[0].default_value = (0.34, 0.38, 0.44, 1.0)     # slightly bluish grey
-    bg.inputs[1].default_value = 0.12
+    bg.inputs[0].default_value = (0.30, 0.31, 0.33, 1.0)     # neutral grey, low: lets the blacks stay black
+    bg.inputs[1].default_value = 0.05
     scene.world = world
 
+    # Only env_light_key (and the arc) cast shadows in the final render (build.setup_render): the bays, fill and rim
+    # are shadowless ambience, so they are kept weak and the key does the modelling under the machines.
     lights = []
-    warm = (1.0, 0.86, 0.72)                                  # ~4500 K
+    warm = (1.0, 0.80, 0.62)                                  # ~3500 K high-pressure sodium / old HID look
     for i, (x, y) in enumerate(LAMP_GRID):
-        lights.append(_area_light(col, f"env_light_bay_{i}", (x, y, LAMP_Z - 0.03), (x, y, 0), 1100.0, 0.6, warm, 'DISK', math.radians(160), shadow_res=0.02))
+        lights.append(_area_light(col, f"env_light_bay_{i}", (x, y, LAMP_Z - 0.03), (x, y, 0), 750.0, 0.6, warm, 'DISK', math.radians(160), shadow_res=0.02))
     kx, ky, kz = KEY_LIGHT_POS
-    lights.append(_area_light(col, "env_light_key", (kx, ky, kz), (0.4, 0.0, 1.0), 550.0, 3.5, (1.0, 0.96, 0.92), 'SQUARE', math.radians(120), shadow_res=0.006))
-    lights.append(_area_light(col, "env_light_fill", (-5.5, -7.0, 3.5), (0.5, 0.0, 1.0), 150.0, 6.0, (0.85, 0.9, 1.0), 'SQUARE', math.radians(150), shadow=False))
-    lights.append(_area_light(col, "env_light_rim", (5.0, 5.0, 3.5), (0.5, 0.0, 1.2), 180.0, 4.0, (0.9, 0.93, 1.0), 'SQUARE', math.radians(150), shadow=False))
+    lights.append(_area_light(col, "env_light_key", (kx, ky, kz), (0.4, 0.0, 1.0), 650.0, 2.2, (1.0, 0.95, 0.90), 'SQUARE', math.radians(120), shadow_res=0.006))
+    lights.append(_area_light(col, "env_light_fill", (-5.5, -7.0, 3.5), (0.5, 0.0, 1.0), 90.0, 6.0, (0.85, 0.9, 1.0), 'SQUARE', math.radians(150), shadow=False))
+    lights.append(_area_light(col, "env_light_rim", (5.0, 5.0, 3.5), (0.5, 0.0, 1.2), 220.0, 4.0, (0.78, 0.86, 1.0), 'SQUARE', math.radians(150), shadow=False))
 
     # EEVEE Next settings: shadows + screen-space raytracing on, volumetrics off
     ev = scene.eevee
