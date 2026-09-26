@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+demo_video/out/
+*.blend1
+demo_video/robodk/spool.stl
