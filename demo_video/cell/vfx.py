@@ -28,7 +28,7 @@ from mathutils import Vector, Matrix
 from . import layout as L
 
 # ------------------------------------------------------------------ tunables
-ARC_LIGHT_POWER = 1000.0          # W; EEVEE point light, flickers +/- ARC_FLICKER
+ARC_LIGHT_POWER = 800.0          # W; EEVEE point light, flickers +/- ARC_FLICKER
 ARC_LIGHT_RANGE = 3.0             # m; EEVEE custom cutoff so the arc does not light the whole hall
 ARC_FLICKER = 0.25
 ARC_FLICKER_HZ = 10.0
@@ -200,33 +200,60 @@ def _glow_material():
     return m
 
 
-def _spark_material():
-    """Hot emissive streak whose colour cools from white-yellow to dark red over its life."""
+def _drive_world_location(nt, target):
+    """Three Value nodes driven by ``target``'s world location (X, Y, Z) — usable inside EEVEE shaders."""
+    outs = []
+    for axis in "XYZ":
+        v = nt.nodes.new("ShaderNodeValue"); v.name = f"vfx_arc_{axis}"
+        drv = v.outputs[0].driver_add("default_value").driver
+        drv.type = 'SCRIPTED'
+        var = drv.variables.new(); var.name = "loc"; var.type = 'TRANSFORMS'
+        var.targets[0].id = target
+        var.targets[0].transform_type = f"LOC_{axis}"
+        var.targets[0].transform_space = 'WORLD_SPACE'
+        drv.expression = "loc"
+        outs.append(v.outputs[0])
+    return outs
+
+
+def _spark_material(arc_empty):
+    """Hot emissive streak that cools from white-yellow to dark red as it flies away from the arc.
+
+    EEVEE does not evaluate the Particle Info node, so the "age" is approximated by the distance
+    from the arc (sparks travel ~2 m/s, so distance ~ age) and per-particle variation comes from
+    Object Info -> Random, which EEVEE does provide for instances.
+    """
     m = bpy.data.materials.new("vfx_spark")
     m.use_nodes = True
     nt = m.node_tree
     for n in list(nt.nodes):
         nt.nodes.remove(n)
     out = nt.nodes.new("ShaderNodeOutputMaterial")
-    pi = nt.nodes.new("ShaderNodeParticleInfo")
-    age = nt.nodes.new("ShaderNodeMath"); age.operation = 'DIVIDE'
-    nt.links.new(pi.outputs["Age"], age.inputs[0])
-    nt.links.new(pi.outputs["Lifetime"], age.inputs[1])
+    ax, ay, az = _drive_world_location(nt, arc_empty)
+    arc = nt.nodes.new("ShaderNodeCombineXYZ")
+    nt.links.new(ax, arc.inputs["X"]); nt.links.new(ay, arc.inputs["Y"]); nt.links.new(az, arc.inputs["Z"])
+    geo = nt.nodes.new("ShaderNodeNewGeometry")
+    dist = nt.nodes.new("ShaderNodeVectorMath"); dist.operation = 'DISTANCE'
+    nt.links.new(geo.outputs["Position"], dist.inputs[0]); nt.links.new(arc.outputs[0], dist.inputs[1])
+    age = nt.nodes.new("ShaderNodeMath"); age.operation = 'DIVIDE'; age.use_clamp = True
+    age.inputs[1].default_value = 0.75                      # ~fully cooled 0.75 m from the arc
+    nt.links.new(dist.outputs["Value"], age.inputs[0])
     ramp = nt.nodes.new("ShaderNodeValToRGB")
     cr = ramp.color_ramp
-    cr.elements[0].position = 0.0; cr.elements[0].color = (1.0, 0.92, 0.7, 1)
-    e = cr.elements.new(0.35); e.color = (1.0, 0.55, 0.12, 1)
-    e = cr.elements.new(0.75); e.color = (0.9, 0.18, 0.02, 1)
-    cr.elements[-1].position = 1.0; cr.elements[-1].color = (0.25, 0.03, 0.0, 1)
+    cr.elements[0].position = 0.0; cr.elements[0].color = (1.0, 0.9, 0.6, 1)
+    e = cr.elements.new(0.3); e.color = (1.0, 0.55, 0.12, 1)
+    e = cr.elements.new(0.7); e.color = (0.85, 0.2, 0.03, 1)
+    cr.elements[-1].position = 1.0; cr.elements[-1].color = (0.35, 0.05, 0.0, 1)
     nt.links.new(age.outputs[0], ramp.inputs["Fac"])
-    # strength = (1 - age)^1.5 * 3 * (0.6 + 0.8 * random) + 0.3  (kept low: AgX bleaches strong emitters)
+    # strength = (1 - age)^1.2 * 3 * (0.6 + 0.8 * random) + 0.3  (kept low: AgX bleaches strong emitters)
     inv = nt.nodes.new("ShaderNodeMath"); inv.operation = 'SUBTRACT'; inv.inputs[0].default_value = 1.0
     nt.links.new(age.outputs[0], inv.inputs[1])
-    pw = nt.nodes.new("ShaderNodeMath"); pw.operation = 'POWER'; pw.inputs[1].default_value = 1.5
+    pw = nt.nodes.new("ShaderNodeMath"); pw.operation = 'POWER'; pw.inputs[1].default_value = 1.2
     nt.links.new(inv.outputs[0], pw.inputs[0])
+    oi = nt.nodes.new("ShaderNodeObjectInfo")
     rnd = nt.nodes.new("ShaderNodeMath"); rnd.operation = 'MULTIPLY_ADD'
     rnd.inputs[1].default_value = 0.8; rnd.inputs[2].default_value = 0.6
-    nt.links.new(pi.outputs["Random"], rnd.inputs[0])
+    nt.links.new(oi.outputs["Random"], rnd.inputs[0])
     mul = nt.nodes.new("ShaderNodeMath"); mul.operation = 'MULTIPLY'
     nt.links.new(pw.outputs[0], mul.inputs[0]); nt.links.new(rnd.outputs[0], mul.inputs[1])
     st = nt.nodes.new("ShaderNodeMath"); st.operation = 'MULTIPLY_ADD'
@@ -342,7 +369,7 @@ def build(arc_empty, weld_intervals, collection=None):
     _set_constant(glow)
 
     # --- sparks: emitter icosphere + one particle system per weld interval
-    spark_mat = _spark_material()
+    spark_mat = _spark_material(arc_empty)
     spark = _uv_sphere("SparkStreak", 1.0, col, spark_mat, segments=8, rings=6, scale=(4.5, 0.16, 0.16))
     spark.location = (0, 0, -50.0)    # the instance source itself stays out of every shot
     spark.visible_shadow = False
