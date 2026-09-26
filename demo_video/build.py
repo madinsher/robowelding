@@ -98,14 +98,25 @@ def setup_render(sc, engine, res, samples=None):
         sc.cycles.max_bounces = 4
         sc.render.use_persistent_data = True
     else:
-        sc.eevee.taa_render_samples = samples or 16
+        # Measured on this CPU/software-GL box (1080p): shadows from every light cost ~2.6 s per TAA sample and
+        # screen-space raytracing ~1 s, so the final look uses 8 samples, shadows from the key light + arc only
+        # with coarse shadow-map texels, and no screen-space raytracing / fast GI (~34 s per 1080p frame).
+        sc.eevee.taa_render_samples = samples or 8
         sc.eevee.use_shadows = True
-        sc.eevee.use_raytracing = True
-        sc.eevee.ray_tracing_options.resolution_scale = '2'
+        sc.eevee.use_raytracing = False
+        sc.eevee.use_fast_gi = False
         sc.eevee.shadow_ray_count = 2
         sc.eevee.shadow_step_count = 4
+        sc.eevee.shadow_resolution_scale = 0.25
         sc.eevee.use_volumetric_shadows = False
-        sc.eevee.volumetric_tile_size = '16'
+        keep = {"env_light_key", "ArcLight"}
+        for ob in bpy.data.objects:
+            if ob.type == 'LIGHT':
+                if ob.name in keep:
+                    ob.data.use_shadow = True
+                    ob.data.shadow_maximum_resolution = 0.008 if ob.name == "ArcLight" else max(ob.data.shadow_maximum_resolution, 0.015)
+                else:
+                    ob.data.use_shadow = False
 
 
 def apply_fx_off(sc, spec):
@@ -170,7 +181,8 @@ def main():
     ap.add_argument("--save", type=str)
     ap.add_argument("--outdir", type=str, default=os.path.join(HERE, "out", "frames"))
     ap.add_argument("--camera", type=str, help="force a camera (name) for stills")
-    ap.add_argument("--fx-off", type=str, default="", help="comma list: raytracing,fastgi,volumetric,dof,glare,shadows,particles,softshadow")
+    ap.add_argument("--fx-off", type=str, default="", help="comma list: raytracing,fastgi,volumetric,dof,glare,shadows,particles,softshadow,bayshadows,coarseshadow,fastshade")
+    ap.add_argument("--fx-on", type=str, default="", help="comma list to re-enable: raytracing,fastgi,allshadows")
     a = ap.parse_args()
 
     if a.export_stl:
@@ -192,6 +204,15 @@ def main():
         a.step = a.step if a.step != 1 else 8
     setup_render(sc, a.engine, res, a.samples)
     apply_fx_off(sc, a.fx_off)
+    ons = {x.strip() for x in a.fx_on.split(",") if x.strip()}
+    if "raytracing" in ons:
+        sc.eevee.use_raytracing = True
+    if "fastgi" in ons:
+        sc.eevee.use_fast_gi = True
+    if "allshadows" in ons:
+        for ob in bpy.data.objects:
+            if ob.type == 'LIGHT' and ob.name.startswith("env_light"):
+                ob.data.use_shadow = True
     os.makedirs(a.outdir, exist_ok=True)
 
     frames = []

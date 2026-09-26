@@ -268,7 +268,8 @@ def _fence_mesh(color="#F2B400", pitch=0.05, wire=0.004):
     nt.links.new(tr.outputs[0], mixs.inputs[1])
     nt.links.new(bsdf.outputs[0], mixs.inputs[2])
     nt.links.new(mixs.outputs[0], out.inputs["Surface"])
-    m.surface_render_method = 'DITHERED'
+    m.surface_render_method = 'BLENDED'          # no dithering noise at low TAA sample counts
+    m.use_transparency_overlap = True
     m.use_backface_culling = False
     return m
 
@@ -376,7 +377,8 @@ def _weld_bead():
     bump = nt.nodes.new("ShaderNodeBump"); bump.inputs["Strength"].default_value = 0.3; bump.inputs["Distance"].default_value = 0.0015
     nt.links.new(wave.outputs["Fac"], bump.inputs["Height"]); nt.links.new(bump.outputs["Normal"], b.inputs["Normal"])
     # colour: slightly darker/bluer heat tint near the ripples
-    m.surface_render_method = 'DITHERED'
+    m.surface_render_method = 'BLENDED'
+    m.use_transparency_overlap = False
     m.use_transparent_shadow = True
     return m
 

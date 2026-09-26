@@ -172,7 +172,8 @@ def _heat_tint_ring(name, r_o, col):
         mul = nt.nodes.new("ShaderNodeMath"); mul.operation = 'MULTIPLY'
         nt.links.new(alpha.outputs["Result"], mul.inputs[0]); nt.links.new(att.outputs["Fac"], mul.inputs[1])
         nt.links.new(mul.outputs[0], b.inputs["Alpha"])
-        m.surface_render_method = 'DITHERED'
+        m.surface_render_method = 'BLENDED'
+        m.use_transparency_overlap = False
     ob.data.materials.append(m)
     ob["tint_on"] = 0.0
     return ob
