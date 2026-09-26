@@ -124,7 +124,7 @@ def _copper():
 
 @register("machined_steel")
 def _machined_steel():
-    return _base("machined_steel", (0.62, 0.62, 0.64), metallic=1.0, roughness=0.28)
+    return _base("machined_steel", (0.55, 0.55, 0.57), metallic=1.0, roughness=0.42)
 
 
 @register("galvanized")

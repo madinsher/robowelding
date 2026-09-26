@@ -29,7 +29,7 @@ except Exception as e:
     print("[build] vfx module unavailable:", e)
 
 
-ARC_LIGHT_POWER = 90.0      # W; the hall is lit with a few hundred W, 500 W bleached the part around the arc
+ARC_LIGHT_POWER = 70.0      # W; the hall is lit with a few hundred W, 500 W bleached the part around the arc
 
 
 def build_scene(with_env=True, with_vfx=True):
@@ -63,12 +63,38 @@ def build_scene(with_env=True, with_vfx=True):
         t0 = time.time()
         vfx.ARC_LIGHT_POWER = ARC_LIGHT_POWER
         fx = vfx.build(anim["arc"], anim["weld_intervals"])
-        vfx.laser_line(rob["torch"]["sensor"], anim["laser_intervals"])
+        laser = vfx.laser_line(rob["torch"]["sensor"], anim["laser_intervals"])
+        _boost_laser(laser)
         vfx.setup_compositor(sc)
         print(f"[build] vfx built in {time.time() - t0:.1f}s")
     ntris = sum(len(o.data.polygons) for o in bpy.data.objects if o.type == 'MESH')
     print(f"[build] mesh polygons: {ntris}")
     return dict(scene=sc, pos=pos, spool=sp, robot=rob, anim=anim, cams=cams, env=env, vfx=fx)
+
+
+def _boost_laser(quad):
+    """Make the seam-search laser readable in a wide-ish shot: longer/wider line, brighter spot."""
+    try:
+        if quad is not None:
+            import mathutils
+            quad.data.transform(mathutils.Matrix.Diagonal((2.2, 2.5, 1.0, 1.0)))   # scale is keyframed -> scale the mesh
+            for m in quad.data.materials:
+                for n in m.node_tree.nodes:
+                    if n.type == 'EMISSION':
+                        n.inputs["Strength"].default_value *= 2.0
+                    elif n.type == 'BSDF_PRINCIPLED':
+                        n.inputs["Emission Strength"].default_value *= 2.0
+        spot = bpy.data.objects.get("LaserSpot")
+        if spot is not None:
+            spot.data.spot_size = max(spot.data.spot_size, 0.35)
+            ad = spot.data.animation_data
+            if ad and ad.action:
+                for fc in ad.action.fcurves:
+                    if fc.data_path == "energy":
+                        for kp in fc.keyframe_points:
+                            kp.co[1] *= 3.0
+    except Exception as e:
+        print("[build] laser boost skipped:", e)
 
 
 def _fallback_lighting(sc):
