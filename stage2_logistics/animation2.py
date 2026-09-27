@@ -279,6 +279,17 @@ def apply(scene, P, M):
     key_setter(lambda v, f: QC.set_tower(qc, names[int(v)], frame=f), P["tower"], discrete=True)
     key_setter(lambda v, f: QC.set_display(qc, int(v), frame=f), P["display"], discrete=True)
 
+    # ---------------------------------------------------------------- kit cassette: pipe-buffer presence LEDs
+    import cassette as CS
+    kit = M.get("kit")
+    if kit is not None and hasattr(CS, "set_presence"):
+        f_taken = P["events"].get("buf_pipe_grip")
+        for slot in range(len(L2.PIPE_BUFFER_X)):
+            on = np.ones(n)
+            if slot == 0 and f_taken:
+                on[f_taken + 6:] = 0.0          # the sensor sees the slot empty once the pipe is lifted
+            key_setter(lambda v, f, slot=slot: CS.set_presence(kit, slot, v, frame=f), on, discrete=True)
+
     # ---------------------------------------------------------------- environment, AGV
     import environment2 as E2
     import storage as SG

@@ -5,7 +5,7 @@ from robodk.robomath import *
 RDK = Robolink()
 robot = RDK.Item('ABB IRB 6700-150/3.20', ITEM_TYPE_ROBOT)
 tool = RDK.Item('Tong gripper', ITEM_TYPE_TOOL)
-GRASP_POINTS = {'Part flange': [[0.0, 0.0, 75.0]], 'Part elbow': [[310.0, 0.0, 474.32606107510065]], 'Part pipe': [[681.0, 0.0, 481.0], [550.0, 0.0, 481.0]], 'Part flange 2': [[0.0, 0.0, 75.0]]}     # part -> grasp points in the part frame (mm)
+GRASP_POINTS = {'Part flange': [[0.0, 0.0, 85.0]], 'Part elbow': [[310.0, 0.0, 474.32606107510065]], 'Part pipe': [[681.0, 0.0, 481.0], [550.0, 0.0, 481.0]], 'Part flange 2': [[0.0, 0.0, 85.0]]}     # part -> grasp points in the part frame (mm)
 TOL = 40.0                # mm
 
 

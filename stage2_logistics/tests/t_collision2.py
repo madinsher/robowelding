@@ -163,7 +163,9 @@ def module_obstacles():
                 o = dict(o)
                 o["module"] = mod
                 obs.append(o)
-        except Exception as e:  # module not built yet
+        except Exception as e:
+            if "--allow-missing" not in sys.argv:
+                raise
             print(f"[obstacles] {mod}: skipped ({type(e).__name__}: {e})")
     return obs
 
@@ -188,6 +190,18 @@ def stage1_obstacles():
     return obs
 
 
+def static_part_segments():
+    """Parts that never move in the plan: finished spools in the rack, the second kit's elbow and pipe."""
+    segs = []
+    spool_parts = ("flange", "elbow", "pipe")
+    for t, bay in L2.STORAGE_FILLED:
+        T = K.planar_frame(*L2.storage_frame(t, bay))
+        segs += [(f"fin_{t}{bay}", a, b, r) for p in spool_parts for a, b, r in part_segments(p, T)]
+    segs += [("kit_elbow2", a, b, r) for a, b, r in part_segments("elbow", K.planar_frame(*L2.KIT_ELBOWS[1]))]
+    segs += [("buffer_pipe2", a, b, r) for a, b, r in part_segments("pipe", K.planar_frame(*L2.pipe_buffer_frame(1)))]
+    return segs
+
+
 def in_windows(f, windows):
     return any(a <= f <= b for a, b in windows)
 
@@ -202,8 +216,27 @@ def main():
     GRIP = plan2.GRIP_T
     TORCH = RB.tool_transform()
     obs = module_obstacles() + stage1_obstacles()
+    # station clamp levers move: replace their whole-swing boxes by boxes at the actual clamp state of each frame
+    clamp_specs = {}
+    try:
+        import assembly_station as AS
+        clamp_specs = AS.clamp_specs()
+        obs = [o for o in obs if not (o["module"] == "assembly_station" and o["name"].endswith("_lever"))]
+    except Exception as e:
+        print(f"[obstacles] assembly_station clamps: static boxes kept ({e})")
+    Fs = plan2.station_frame()
+
+    def clamp_boxes(i):
+        out = []
+        for name, cs in clamp_specs.items():
+            pts = AS.clamp_points(cs, float(P["clamps"][name][i]))
+            w = (Fs @ np.c_[pts, np.ones(len(pts))].T).T[:, :3]
+            lo, hi = w.min(axis=0) - 0.012, w.max(axis=0) + 0.012
+            out.append(dict(name=f"stn_clamp_{name}_lever@state", center=tuple((lo + hi) / 2), size=tuple(hi - lo),
+                            yaw=0.0, module="assembly_station"))
+        return out
     BX = Boxes(obs)
-    print(f"{len(obs)} obstacle boxes")
+    print(f"{len(obs)} obstacle boxes (+{len(clamp_specs)} state-dependent clamp levers)")
     contact = [tuple(w) for w in P["intervals"].get("contact", [])]
     tack_arcs = [tuple(w) for w in P["intervals"]["tack_arc"]]
     carried = {p: [] for p in P["parts"]}
@@ -218,6 +251,7 @@ def main():
         carried[part] = att
     worst = {}
     fails = []
+    fixed_parts = static_part_segments()
     home_q = np.array(L.ROBOT_Q_HOME)
 
     def note(key, f, d, limit):
@@ -231,23 +265,45 @@ def main():
         x, q = P["handler_x"][i], P["handler_q"][i]
         caps, fr = arm_capsules(H, q, plan2.handler_base(x), L2.HANDLER_SCALE, GRIP, 0.13)
         in_contact = in_windows(f, contact)
+        cb = clamp_boxes(i) if clamp_specs else []
+        CB = Boxes(cb) if cb else None
         # 1. handler vs static
         for name, a, b, r in caps:
             if name == "tool" and in_contact:
                 continue
-            dd = BX.seg_dist(a, b) - r
-            for k in np.nonzero(dd < 0.25)[0]:
-                o = obs[k]
-                note(f"handler.{name} vs {o['module']}:{o['name']}", f, float(dd[k]), MARGIN)
+            for BXk, olist in ((BX, obs), (CB, cb)):
+                if BXk is None:
+                    continue
+                dd = BXk.seg_dist(a, b) - r
+                for k in np.nonzero(dd < 0.25)[0]:
+                    o = olist[k]
+                    note(f"handler.{name} vs {o['module']}:{o['name']}", f, float(dd[k]), MARGIN)
         for part, T in P["parts"].items():
             if not carried[part][i] or in_contact:
                 continue
             for a, b, r in part_segments(part, T[i]):
-                dd = BX.seg_dist(a, b) - r
+              for BXk, olist in ((BX, obs), (CB, cb)):
+                if BXk is None:
+                    continue
+                dd = BXk.seg_dist(a, b) - r
                 for k in np.nonzero(dd < 0.25)[0]:
-                    o = obs[k]
+                    o = olist[k]
                     # parts vs padded support boxes (~12 mm padding): no contact is the criterion
                     note(f"part.{part} vs {o['module']}:{o['name']}", f, float(dd[k]), 0.0)
+        # 1b. carried part vs every part that is not carried (static parts + plan parts at rest)
+        others = list(fixed_parts)
+        for part, T in P["parts"].items():
+            if not carried[part][i]:
+                others += [(part, a, b, r) for a, b, r in part_segments(part, T[i])]
+        for part, T in P["parts"].items():
+            if not carried[part][i] or in_contact:
+                continue
+            mine = part_segments(part, T[i])
+            for nm, oa, ob, orr in others:
+                if nm == part:
+                    continue
+                d = min(seg_seg_dist(a, b, oa, ob) - r - orr for a, b, r in mine)
+                note(f"part.{part} vs part {nm}", f, d, 0.0)
         # 3. zone rule
         pts = [a for _, a, b, _ in caps] + [b for _, a, b, _ in caps]
         for part, T in P["parts"].items():
@@ -269,6 +325,18 @@ def main():
         tq = P["tack_q"][i]
         tb = plan2.tack_base()
         tcaps, _ = arm_capsules(TK, tq, tb, L2.TACK_SCALE, TORCH, L.TORCH_NOZZLE_R + 0.004, torch=True)
+        near_arc0 = any(a - 8 <= f <= b + 8 for a, b in tack_arcs)
+        for name, a, b, r in tcaps:
+            for BXk, olist in ((BX, obs), (CB, cb)):
+                if BXk is None:
+                    continue
+                dd = BXk.seg_dist(a, b) - r
+                for k in np.nonzero(dd < 0.25)[0]:
+                    o = olist[k]
+                    if o["module"] == "tack_robot":          # its own pedestal / cabinet
+                        continue
+                    lim = -0.02 if (name == "tool" and near_arc0 and "seat" in o["name"]) else MARGIN
+                    note(f"tack.{name} vs {o['module']}:{o['name']}", f, float(dd[k]), lim)
         dmin = min(seg_seg_dist(a, b, c, d) - ra - rc for _, a, b, ra in caps for _, c, d, rc in tcaps)
         note("handler vs tack robot", f, dmin, 0.05)
         near_arc = any(a - 8 <= f <= b + 8 for a, b in tack_arcs)

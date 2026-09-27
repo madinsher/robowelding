@@ -99,7 +99,12 @@ def main():
                     inside.append((f, o["name"]))
             # line of sight to the aim point
             n += 1
-            for nm, a, b, r in caps + tcaps + wcaps:
+            subj = SUBJECT.get(name)
+            tagged = [("handler", c) for c in caps] + [("tack", c) for c in tcaps] + [("welder", c) for c in wcaps]
+            for owner, (nm, a, b, r) in tagged:
+                # the subject's own tool (gripper holding the part at the aim point / torch at the seam) is the subject
+                if owner == subj and nm in ("tool", "torch_neck"):
+                    continue
                 if C.seg_seg_dist(cam, aim, a, b) < r * 0.8:
                     blocked += 1
                     break
@@ -116,10 +121,10 @@ def main():
             status.append(f"camera inside {sorted(set(nm for _, nm in inside))[:4]} at frames {[f for f, _ in inside][:5]}")
         if frac_b > 0.25:
             status.append(f"line of sight blocked {frac_b:.0%}")
-        if out_of_frame > 0.2 * n:
+        if SUBJECT.get(name) and out_of_frame > 0.5 * n:
             status.append(f"subject out of frame in {out_of_frame}/{n} samples")
         print(f"{name:16s} {f0:5d}-{f1:5d} blocked {frac_b:4.0%} out-of-frame {out_of_frame:3d}/{n:3d}  {'; '.join(status) or 'ok'}")
-        if inside or frac_b > 0.25:
+        if inside or frac_b > 0.25 or (SUBJECT.get(name) and out_of_frame > 0.5 * n):
             bad.append(name)
     print("RESULT:", "OK" if not bad else f"FAIL {bad}")
     return 0 if not bad else 1

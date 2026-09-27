@@ -154,7 +154,8 @@ def _parent_all(objs, root):
             ob.matrix_parent_inverse = inv
 
 
-_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+import fonts2  # noqa: E402
+_FONT = fonts2.SANS_BOLD
 
 
 def _label_mat(key, texts, cell=(320, 128), fg=(20, 20, 20), bg=(242, 180, 0)):

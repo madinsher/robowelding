@@ -43,6 +43,7 @@ def fades(ov: Overlay):
 
 # ----------------------------------------------------------------------------- fonts (Linux + Windows)
 _FONT_DIRS = [
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "fonts"),   # shipped
     "/usr/share/fonts/truetype/dejavu", "/usr/share/fonts/dejavu", "/usr/share/fonts/TTF",
     "/usr/local/share/fonts", os.path.expanduser("~/.fonts"),
     os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"),
@@ -56,9 +57,12 @@ _FALLBACK = {False: ["DejaVuSans.ttf", "arial.ttf", "Arial.ttf", "segoeui.ttf"],
 def resolve_font(path: str, bold: bool) -> str:
     """``path`` if it exists, else the same file name / a Cyrillic-capable fallback (DejaVu, Arial, Segoe UI) from
     the usual font folders or matplotlib's bundled DejaVu fonts.  The storyboard keeps the stage-1 Linux paths."""
+    names = ([os.path.basename(path)] if path else []) + _FALLBACK[bold]
+    shipped = os.path.join(_FONT_DIRS[0], names[0])
+    if os.path.isfile(shipped):          # the repository's copy first: identical glyphs on every OS
+        return shipped
     if path and os.path.isfile(path):
         return path
-    names = ([os.path.basename(path)] if path else []) + _FALLBACK[bold]
     dirs = list(_FONT_DIRS)
     try:
         import matplotlib

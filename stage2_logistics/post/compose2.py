@@ -228,9 +228,22 @@ def assign_overlays(ovs: Sequence[overlays2.Overlay], parts: List[dict]) -> Dict
 
 
 # ----------------------------------------------------------------------------- compose
+def check_pngs(paths) -> List[str]:
+    """Paths that are not complete, decodable PNGs (PIL verify: header, chunk CRCs, end of stream)."""
+    from PIL import Image
+    bad = []
+    for p in paths:
+        try:
+            with Image.open(p) as im:
+                im.verify()
+        except Exception as e:
+            bad.append(f"{p} ({type(e).__name__}: {e})")
+    return bad
+
+
 def compose2(frames_dir, out_path, edl_path=EDL_JSON, storyboard=SB2_JSON, stage1=None, audio: bool = True,
              preview: bool = False, compact=None, keep_temp: bool = False, threads: int = 0, verbose: bool = False,
-             soundtrack: Optional[str] = None) -> str:
+             soundtrack: Optional[str] = None, allow_missing: bool = False) -> str:
     """Compose the stage-2 video; returns the output path.  ``soundtrack``: use this WAV instead of synthesizing."""
     frames_dir, edl_path, storyboard = resolve(frames_dir), resolve(edl_path), resolve(storyboard)
     stage1, soundtrack = resolve(stage1), resolve(soundtrack)
@@ -267,7 +280,14 @@ def compose2(frames_dir, out_path, edl_path=EDL_JSON, storyboard=SB2_JSON, stage
         sources[k] = src
     if report:
         msg = "scene frames not rendered (held): " + ", ".join(report)
+        if not preview and not allow_missing:
+            raise SystemExit("ERROR: " + msg + "\nRender them (build2.py --render resumes) or pass --allow-missing / --preview.")
         print(("preview: " if preview else "WARNING: ") + msg)
+    if not preview:
+        bad = check_pngs([frames[f] for f in sorted({f for v in sources.values() for f in v})])
+        if bad:
+            raise SystemExit("ERROR: unreadable / truncated frame files (delete them and re-run build2.py --render):\n  "
+                             + "\n  ".join(bad[:30]) + ("" if len(bad) <= 30 else f"\n  ... {len(bad)} in total"))
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -340,6 +360,10 @@ def compose2(frames_dir, out_path, edl_path=EDL_JSON, storyboard=SB2_JSON, stage
                              + ("" if keep_temp else " (use --keep-temp to keep it)"))
         if verbose:
             print(f"encoded in {time.time() - t0:.1f} s")
+        for path in [out_path] + ([Path(compact)] if compact else []):
+            got = probe_video(path)["frames"]
+            if got != n_frames:
+                raise SystemExit(f"ERROR: {path} has {got} frames, the edit has {n_frames} (a broken input frame?)")
     finally:
         if keep_temp:
             keep = Path(str(out_path.with_suffix("")) + "_tmp")
@@ -413,11 +437,12 @@ def main(argv=None) -> None:
     ap.add_argument("--verify", action="store_true", help="check the stage-1 splices (PSNR) after encoding")
     ap.add_argument("--soundtrack", default=None, metavar="WAV", help="use this WAV instead of synthesizing")
     ap.add_argument("--threads", type=int, default=0, help="x264 threads (0 = auto)")
+    ap.add_argument("--allow-missing", action="store_true", help="final encode even if some stage-2 frames are missing (held)")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args(argv)
     out = compose2(a.frames, a.out, a.edl, a.storyboard, a.stage1, audio=not a.no_audio, preview=a.preview,
                    compact=a.compact, keep_temp=a.keep_temp, threads=a.threads, verbose=a.verbose,
-                   soundtrack=a.soundtrack)
+                   soundtrack=a.soundtrack, allow_missing=a.allow_missing)
     print(out)
     if a.compact:
         print(a.compact)

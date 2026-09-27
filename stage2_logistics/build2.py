@@ -48,12 +48,14 @@ def build_scene(with_env=True, with_vfx=True, verbose=True):
     sc.unit_settings.system = 'METRIC'
     sc.frame_start, sc.frame_end = 1, animation.N_FRAMES
     # ---- stage-1 machines + its choreography (bead progress etc. is computed on the stage-1 timeline)
+    import fonts2
+    fonts2.patch_stage1()                      # stage-1 paint markings with the shipped fonts (any OS)
     pos = positioner.build()
     sp = spool.build(name="spool")
     G.set_parent(sp["root"], pos["mount"], keep_world=False)
     rob = robot_build.build()
     t0 = time.time()
-    animation.build(sc, rob, pos, sp)
+    anim1 = animation.build(sc, rob, pos, sp)
     if verbose:
         print(f"[build2] stage-1 choreography in {time.time() - t0:.1f}s", flush=True)
     # ---- plan
@@ -105,6 +107,11 @@ def build_scene(with_env=True, with_vfx=True, verbose=True):
         tack_iv = [tuple(iv) for iv in P["intervals"]["tack_arc"]]
         fx = vfx.build(tck["arc"], tack_iv)
         _limit_particle_caches(fx)
+        # the stage-1 arc effects at their embedded frames: the last seam's sparks and fume are still in the air when
+        # the edit cuts from the stage-1 video to the first "post" shot
+        off = P["weld_offset"]
+        fx1 = vfx.build(anim1["arc"], [(a + off, b + off) for a, b in anim1["weld_intervals"]])
+        _limit_particle_caches(fx1)
         scan_iv = [tuple(iv) for iv in P["intervals"]["scan"]]
         if scan_iv:
             marking_qc.scan_line(qc, scan_iv)
@@ -180,6 +187,22 @@ def setup_render(sc, engine, res, samples=None, quality="stage1", gpu=None):
         for d in prefs.devices:
             d.use = d.type == gpu
         sc.cycles.device = 'GPU'
+
+
+def _stamp_plan(outdir, keep_stale=False):
+    """Frames of one render folder must come from one plan: write plan2's source hash into <outdir>/.plan_id and
+    refuse to mix frames of another plan (resumed renders would otherwise silently keep stale frames)."""
+    os.makedirs(outdir, exist_ok=True)
+    stamp = os.path.join(outdir, ".plan_id")
+    pid = plan2._IMPORT_HASH
+    if os.path.exists(stamp):
+        old = open(stamp, encoding="utf-8").read().strip()
+        has_frames = any(n.startswith("frame_") for n in os.listdir(outdir))
+        if old != pid and has_frames and not keep_stale:
+            raise SystemExit(f"[build2] {outdir} holds frames of another plan ({old}, now {pid}): the choreography or"
+                             f" the edit changed. Move/delete those frames (or use a new --outdir), or pass --keep-stale.")
+    with open(stamp, "w", encoding="utf-8") as fh:
+        fh.write(pid + "\n")
 
 
 def render_frames(sc, frames, outdir, skip_existing=True, bake=True):
@@ -289,11 +312,14 @@ def main():
     ap.add_argument("--sketch", action="store_true")
     ap.add_argument("--outdir", type=str, default=None)
     ap.add_argument("--camera", type=str, help="force a camera (object name) for stills")
+    ap.add_argument("--keep-stale", action="store_true", help="resume into a folder rendered for another plan (not advised)")
     a = ap.parse_args(_argv())
 
     S = build_scene(with_env=not a.no_env, with_vfx=not a.no_vfx)
     sc = S["scene"]
     if a.save:
+        # with the render look applied (engine, AgX, shadows, samples) so the .blend reproduces the video
+        setup_render(sc, a.engine, tuple(a.res or (1920, 1080)), a.samples, a.quality, a.gpu)
         bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.save))
         print("saved", a.save)
     if a.sketch:
@@ -341,6 +367,8 @@ def main():
             sc.timeline_markers.remove(m)
         sc.camera = bpy.data.objects[a.camera]
     outdir = a.outdir or os.path.join(OUT, "frames" if a.render else "preview_frames" if a.preview else "stills")
+    if a.render or a.preview:
+        _stamp_plan(outdir, a.keep_stale)
     render_frames(sc, frames, outdir, skip_existing=bool(a.render or a.preview), bake=not a.no_vfx)
 
 

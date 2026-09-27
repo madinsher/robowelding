@@ -48,6 +48,7 @@ TACK_VMAX = np.radians([95.0, 95.0, 95.0, 95.0, 95.0, 95.0])
 LIN_SPEED = 0.45                          # m/s straight-line approach / retract moves (short); long lines up to 1.2 m/s
 TRAVEL_Z = 1.55                           # TCP height for transfers with a part in the gripper
 SWING_X = -4.80                           # carriage x where the handler swings a spool toward the cell opening
+CLAMP_DELAY = 14                          # frames between the gripper's retract and a station clamp closing
 TUCK_R = 0.95                             # m: TCP distance from J1 in the folded travel pose
 TUCK_DX = 1.0                             # m: carriage travels longer than this use the folded travel pose
 STAGE1_N = 1104
@@ -574,14 +575,15 @@ def _script(P, S1):
     P.ev("clamp_flange", P.hc + 2)
     # ---------------------------------------------------------------- elbow
     P.pick("elbow", kit_e[0], "elbow", L2.KIT_ELBOWS[0][0][0], lift=0.30, tag="kit_elbow")
-    P.place(["elbow"], Fs, "elbow", L2.STATION_ORIGIN[0], lift=0.30, tag="stn_elbow")
-    P.clamp(["elbow"], 1.0, P.hc + 2)
-    P.ev("clamp_elbow", P.hc + 2)
+    P.place(["elbow"], Fs, "elbow", L2.STATION_ORIGIN[0], lift=0.40, tag="stn_elbow")
+    P.clamp(["elbow"], 1.0, P.hc + CLAMP_DELAY)            # the lever swings over the elbow: gripper gone first
+    P.ev("clamp_elbow", P.hc + CLAMP_DELAY)
     # ---------------------------------------------------------------- pipe
     P.pick("pipe", kit_p[0], "pipe", L2.PIPE_BUFFER_X[0], tag="buf_pipe")
-    P.place(["pipe"], Fs, "pipe", L2.STATION_ORIGIN[0], tag="stn_pipe")
-    f = P.clamp(["pipe"], 1.0, P.hc + 2)
-    P.ev("clamp_pipe", P.hc + 2)
+    # carried above the gap sensor (it stands between the pipe buffer and the station, top at ~1.53 m)
+    P.place(["pipe"], Fs, "pipe", L2.STATION_ORIGIN[0], lift=0.55, tag="stn_pipe")
+    f = P.clamp(["pipe"], 1.0, P.hc + CLAMP_DELAY)
+    P.ev("clamp_pipe", P.hc + CLAMP_DELAY)
     _set_from(P.stn_lamp, f + 6, 1.0)
     P.ev("gap_ok", f + 6)
     # handler steps back to a waiting pose next to the station (clear of the tack robot)
@@ -741,8 +743,11 @@ def _script(P, S1):
         P.attach(p, P.events["conv_end_grip"] + 8)
     t, b = L2.STORAGE_TARGET
     Fb = K.planar_frame(*L2.storage_frame(t, b))
-    # vertical descent between the tier-1 V-posts: approach from above their heads
-    P.place(["flange", "elbow", "pipe"], Fb, "spool", L2.HANDLER_TRACK_X[0], lift=1.15, tag="store")
+    # vertical descent between the tier-1 spools / V-posts: approach from above the tier-1 spools (top at seat 1.00 +
+    # SPOOL_TOP_Z 0.618 = 1.62 m), so the carried flange (lowest point) clears them: lift = 1.62 + 0.06 + axis height
+    # of the grasp above the flange - grasp height at the bay
+    lift_store = L2.STORAGE["seat_z"][1] + L2.SPOOL_TOP_Z + 0.06 + L2.PIPE_AXIS_Z - (Fb @ grasp_frame("spool"))[2, 3]
+    P.place(["flange", "elbow", "pipe"], Fb, "spool", L2.HANDLER_TRACK_X[0], lift=lift_store, tag="store")
     # next cycle: fold, turn toward the kit pallet and go for the second elbow (the video ends on the way)
     q_f = P._tuck(L2.HANDLER_TRACK_X[0], 0.0, TRAVEL_Z, P.hq[P.hc - 1], P.hc)
     P.h_move(L2.HANDLER_TRACK_X[0], q_f)
@@ -821,11 +826,14 @@ def _hash():
     return h.hexdigest()[:12]
 
 
+_IMPORT_HASH = _hash()     # sources as they were when this module was imported = the code that actually runs
+
+
 def solve(use_cache=True, verbose=True):
     """Run (or load) the plan.  Returns a dict of numpy arrays + events / intervals / metadata.
     Looks for plan2_<hash>.npz in stage2_logistics/data (shipped) and stage2_logistics/out (local cache)."""
     os.makedirs(OUT, exist_ok=True)
-    name = f"plan2_{_hash()}.npz"
+    name = f"plan2_{_IMPORT_HASH}.npz"
     path = os.path.join(OUT, name)
     if use_cache:
         for p in (os.path.join(DATA, name), path):
@@ -863,7 +871,7 @@ def ship():
     """Copy the current plan into stage2_logistics/data/ (committed) and drop older shipped plans."""
     import shutil
     solve()
-    name = f"plan2_{_hash()}.npz"
+    name = f"plan2_{_IMPORT_HASH}.npz"
     os.makedirs(DATA, exist_ok=True)
     for old in glob.glob(os.path.join(DATA, "plan2_*.npz")):
         if os.path.basename(old) != name:

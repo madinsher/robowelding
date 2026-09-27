@@ -206,8 +206,9 @@ def _chain_mat(key, space_obj=None):
 
 
 # ============================================================================ PIL images
-_FONT_B = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+import fonts2  # noqa: E402
+_FONT_B = fonts2.SANS_BOLD
+_FONT = fonts2.SANS
 
 
 def _font(path, size):
