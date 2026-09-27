@@ -16,6 +16,14 @@ demo_welding_cell_1080p.mp4   готовые кадры сварки этапа 
 post/compose2.py          монтаж по post/edl.json + титры (post/storyboard2.json) + звук -> mp4
 ```
 
+## 0. Одной командой
+
+Windows (PowerShell, из корня репозитория): `powershell -ExecutionPolicy Bypass -File stage2_logistics\run_render_gpu.ps1`
+
+Linux/macOS: `bash stage2_logistics/run_render_gpu.sh`
+
+Скрипт создаёт `.venv` с Python 3.11, ставит `bpy`, делает пробный кадр с проверкой, что считает видеокарта, рендерит все новые кадры (возобновляемо) и собирает ролик. Второй аргумент/`-Step` ограничивает шаг: `test`, `render`, `compose`. Ниже — то же по шагам.
+
 ## 1. Что нужно на машине
 
 * Видеокарта с поддержкой OpenGL 4.3 (NVIDIA / AMD / Intel Arc), свежий драйвер, 6+ ГБ видеопамяти.
