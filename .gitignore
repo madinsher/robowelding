@@ -4,3 +4,4 @@ demo_video/out/
 *.blend1
 demo_video/robodk/spool.stl
 stage2_logistics/out/
+stage2_logistics/out_*.txt
