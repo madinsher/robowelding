@@ -3,3 +3,4 @@ __pycache__/
 demo_video/out/
 *.blend1
 demo_video/robodk/spool.stl
+stage2_logistics/out/
