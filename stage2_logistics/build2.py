@@ -237,15 +237,31 @@ def _report_gpu(sc):
 
 
 # ============================================================================ sketches
+def _overhead_objects(sc, zmin=2.8):
+    """Static meshes hanging above the floor equipment (fume hood, duct, hall lamps): hidden in the top view."""
+    import mathutils
+    out = []
+    for ob in sc.objects:
+        if ob.type != 'MESH' or ob.hide_render or ob.animation_data or (ob.parent and ob.parent.animation_data):
+            continue
+        z = min((ob.matrix_world @ mathutils.Vector(c)).z for c in ob.bound_box)
+        if z > zmin:
+            out.append(ob)
+    return out
+
+
 def sketches(sc, outdir, engine, samples):
-    """Layout sketches at frame 1: orthographic top view and a 3/4 view of the whole area."""
+    """Layout sketches at frame 1: orthographic top view and a 3/4 view of the whole area.  The hall roof deck is at
+    9 m (trusses from 8 m): the top view clips everything above 7.4 m and hides the overhead equipment, the 3/4 camera
+    stands inside the hall under the trusses."""
     import mathutils
     os.makedirs(outdir, exist_ok=True)
     for m in list(sc.timeline_markers):
         sc.timeline_markers.remove(m)
+    sc.frame_set(1)
     views = [
-        ("layout_top", (-4.0, 0.0, 20.0), (-4.0, 0.0, 0.0), dict(ortho=17.5)),
-        ("layout_34", (-16.0, -11.0, 10.5), (-4.2, 0.2, 0.4), dict(lens=28)),
+        ("layout_top", (-4.0, 0.0, 20.0), (-4.0, 0.0, 0.0), dict(ortho=17.5, clip_start=20.0 - 7.4)),
+        ("layout_34", (-15.5, -11.5, 7.4), (-4.4, 0.2, 0.4), dict(lens=22)),
     ]
     paths = []
     for name, loc, aim, opt in views:
@@ -255,19 +271,27 @@ def sketches(sc, outdir, engine, samples):
             cd.ortho_scale = opt["ortho"]
         else:
             cd.lens = opt["lens"]
+        cd.clip_start = opt.get("clip_start", 0.1)
         cd.clip_end = 200
         cam = bpy.data.objects.new(name, cd)
         sc.collection.objects.link(cam)
         cam.location = loc
         d = mathutils.Vector(aim) - mathutils.Vector(loc)
         cam.rotation_euler = d.to_track_quat('-Z', 'Y').to_euler()
+        hidden = []
         if "ortho" in opt:
             cam.rotation_euler = (0.0, 0.0, 0.0)
+            hidden = _overhead_objects(sc)
+            print("[sketch] hidden overhead objects:", ", ".join(sorted(o.name for o in hidden)), flush=True)
+        for ob in hidden:
+            ob.hide_render = True
         sc.camera = cam
         sc.frame_set(1)
         p = os.path.join(outdir, name + ".png")
         sc.render.filepath = p
         bpy.ops.render.render(write_still=True)
+        for ob in hidden:
+            ob.hide_render = False
         paths.append(p)
         print("[sketch]", p, flush=True)
     return paths
