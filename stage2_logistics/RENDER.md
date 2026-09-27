@@ -164,4 +164,7 @@ python stage2_logistics/post/compose2.py --frames stage2_logistics/out/frames --
 * Сцена этапа 2: 4595 кадров; сварка этапа 1 встроена со сдвигом `WELD_OFFSET` = 1840 (печатается при сборке).
 * Монтаж: 15 новых планов + 2 вставки этапа 1, ≈ 89,7 с (2152 кадра, из них 1402 новых).
 * Проверки перед рендером (на CPU, без Blender-рендера): `python stage2_logistics/tests/t_continuity2.py`,
-  `python stage2_logistics/tests/t_collision2.py`.
+  `python stage2_logistics/tests/t_collision2.py`, `python stage2_logistics/tests/t_cameras2.py`,
+  `python stage2_logistics/tests/t_build2.py` (все печатают `RESULT: OK`).
+* Как выглядят планы — `stage2_logistics/deliverables/preview_shots_640x360.jpg` (середина каждого нового плана,
+  EEVEE на CPU) и эскизы компоновки `deliverables/layout_top.png`, `deliverables/layout_34.png`.

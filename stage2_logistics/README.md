@@ -45,6 +45,8 @@
 python3 stage2_logistics/plan2.py                  # хореография: события, отказы IK (должно быть 0)
 python3 stage2_logistics/tests/t_continuity2.py    # шаг суставов <= 6°/кадр, трек <= 2 м/с, детали без скачков
 python3 stage2_logistics/tests/t_collision2.py     # зазоры: роботы / детали / оборудование / ограждения, правило зон
+python3 stage2_logistics/tests/t_cameras2.py       # камеры: не внутри объектов, линия взгляда, объект съёмки в кадре
+python3 stage2_logistics/tests/t_build2.py         # сцена Blender (bpy) совпадает с планом: TCP, детали, маркеры, швы
 python3 stage2_logistics/edl.py                    # монтажный лист, post/edl.json + post/storyboard2.json
 python3 stage2_logistics/tests/t_post2.py          # монтаж на синтетических кадрах (стыки с этапом 1 по PSNR)
 python3 stage2_logistics/tests/t_robodk2.py        # RoboDK-скрипт на mock Robolink (нужен pip install robodk)
