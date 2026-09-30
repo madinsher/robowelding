@@ -3,11 +3,21 @@ the action) and is used in this order by the edit (edl.py).  Rules from the stag
 or inside a zone, outside the swing of carried parts and robot arms, no cut while an arm crosses the lens.
 
 SHOTS: (name, (start_event, offset), (end_event, offset), cam_from, cam_to, aim_from, aim_to, lens_mm, fstop, caption_key)
-"""
-import bpy
 
-import tools  # noqa: F401
-from cell import geom as G
+S1_SHOTS: the stage-1 welding shots (demo_video/cell/animation.py SHOTS, read from the source without importing it) at
+their embedded scene frames (event "weld_offset" + stage-1 frame).  The English edition renders them from this scene
+instead of splicing the stage-1 video, which has Russian titles burned in (editions.py); the Russian edition does not
+render them, their markers are harmless there.  events_of(plan) adds "weld_offset" to the plan events.
+
+bpy is imported only by build(): edl.py (and so the montage) can import this module without Blender.
+"""
+import ast
+import os
+import sys
+
+DEMO = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "demo_video")
+if DEMO not in sys.path:
+    sys.path.insert(0, DEMO)
 
 PRE_SHOTS = [
     ("S2_01_wide", ("start", 0), ("start", 103), (-9.4, -8.6, 6.4), (-8.3, -7.6, 5.9), (-4.6, 0.4, 0.7), (-4.9, 0.6, 0.8), 24, 0, None),
@@ -33,6 +43,36 @@ POST_SHOTS = [
 ]
 SHOTS = PRE_SHOTS + POST_SHOTS
 
+S1_SEGMENTS = [(97, 456), (541, 930)]      # stage-1 frames used by the edit (edl.py): the welding part
+
+
+def _stage1_shots():
+    """Stage-1 SHOTS literal (name, f0, f1, cam_from, cam_to, aim_from, aim_to, lens, fstop) parsed from
+    demo_video/cell/animation.py (importing it would need bpy)."""
+    src = os.path.join(DEMO, "cell", "animation.py")
+    tree = ast.parse(open(src, encoding="utf-8").read())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "SHOTS" for t in node.targets):
+            return [tuple(s) for s in ast.literal_eval(node.value)]
+    raise RuntimeError(f"SHOTS not found in {src}")
+
+
+def _s1_shots():
+    out = []
+    for name, f0, f1, c0, c1, a0, a1, lens, fstop in _stage1_shots():
+        if any(f0 <= b and a <= f1 for a, b in S1_SEGMENTS):
+            out.append(("S1_" + name, ("weld_offset", f0), ("weld_offset", f1), c0, c1, a0, a1, lens, fstop, None))
+    return out
+
+
+S1_SHOTS = _s1_shots()
+ALL_SHOTS = PRE_SHOTS + S1_SHOTS + POST_SHOTS
+
+
+def events_of(plan):
+    """Plan events + "weld_offset" (the scene frame of stage-1 frame 0) for shot_range / build."""
+    return dict(plan["events"], weld_offset=int(plan["weld_offset"]))
+
 
 def shot_range(shot, events):
     (e0, o0), (e1, o1) = shot[1], shot[2]
@@ -42,6 +82,8 @@ def shot_range(shot, events):
 def build(scene, events, shots=None, collection=None):
     """Create the cameras (animated from -> to over each shot, ease in/out) and bind them with timeline markers.
     Returns list of (camera object, f0, f1)."""
+    import bpy
+    from cell import geom as G
     shots = shots or SHOTS
     col = collection or bpy.data.collections.new("Cameras2")
     if collection is None:

@@ -1,4 +1,8 @@
 {
+ "edition": "ru",
+ "lang": "ru",
+ "brand": "pigrupp",
+ "stage1_mode": "video",
  "fps": 24,
  "frames": 2152,
  "stage1_video": "../demo_video/deliverables/demo_welding_cell_1080p.mp4",
@@ -1615,7 +1619,8 @@
   "store_contact": 4310,
   "handler_home_end": 4470,
   "agv_arrive": 4555,
-  "end": 4595
+  "end": 4595,
+  "weld_offset": 1840
  },
  "intervals": {
   "handler": [
