@@ -4,9 +4,9 @@ the first "post" shot starts at WELD_OFFSET + 931, the stage-1 segments cover st
 (the track-move shot 457..540 is dropped: its wide background predates the logistics zone), so the welding robot,
 the positioner and the spool are in the same state on both sides of each cut.
 
-    python3 stage2_logistics/edl.py            print the EDL and write stage2_logistics/post/edl.json
+    python3 stage2_logistics/edl.py            print the EDLs and write stage2_logistics/post/edl_<edition>.json
 
-edl.json (consumed by post/compose2.py, no bpy needed):
+edl_<edition>.json (consumed by post/compose2.py, no bpy needed):
     {"fps": 24, "frames": N_out, "stage1_video": "...mp4", "weld_offset": W,
      "segments": [{"src": "s2", "shot": name, "f0": scene_f0, "f1": scene_f1, "out0": o0, "out1": o1, "caption": key},
                   {"src": "s1", "f0": 97, "f1": 456, "out0": ..., "out1": ...}, ...],
@@ -196,6 +196,7 @@ if __name__ == "__main__":
     import sys
     sys.path.insert(0, HERE)
     import editions
+    editions.safe_console()
     argv = sys.argv[1:]
     which = argv[argv.index("--edition") + 1] if "--edition" in argv else "all"
     eds = editions.names() if which == "all" else [editions.get(which)["name"]]

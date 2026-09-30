@@ -24,7 +24,7 @@ DELIV = os.path.join(HERE, "deliverables")
 
 EDITIONS = {
     "ru": dict(name="ru", lang="ru", brand="pigrupp", stage1="video",
-               label="русская версия, логотип ПИГРУПП, сварка - вставка видео этапа 1"),
+               label="Russian, PIGRUPP logo, welding part spliced from the stage-1 video"),
     "en": dict(name="en", lang="en", brand="atomix", stage1="render",
                label="English version, ATOMIX logo, welding shots rendered from the stage-2 scene"),
 }
@@ -53,8 +53,23 @@ def names():
     return list(EDITIONS)
 
 
+def safe_console():
+    """Print Cyrillic (Russian captions in summaries, the ru storyboard) without UnicodeEncodeError when stdout /
+    stderr is redirected on a Windows console with a legacy code page: unencodable characters are escaped."""
+    import sys
+    for st in (sys.stdout, sys.stderr):
+        enc = (getattr(st, "encoding", None) or "").lower().replace("-", "")
+        if enc != "utf8" and hasattr(st, "reconfigure"):
+            try:
+                st.reconfigure(errors="backslashreplace")
+            except (ValueError, OSError):
+                pass
+
+
 def add_argument(ap):
-    """``--edition`` for an argparse parser (every CLI of the pipeline uses the same option)."""
+    """``--edition`` for an argparse parser (every CLI of the pipeline uses the same option; also makes the console
+    output safe on Windows code pages, see safe_console)."""
+    safe_console()
     ap.add_argument("--edition", default=DEFAULT, choices=names(),
-                    help="ru: Russian + ПИГРУПП (stage-1 video spliced); en: English + ATOMIX (all shots rendered)")
+                    help="ru: Russian + PIGRUPP logo (stage-1 video spliced); en: English + ATOMIX logo (all shots rendered)")
     return ap

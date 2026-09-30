@@ -10,7 +10,9 @@ Layout from layout2 `STORAGE` / `storage_frame(tier, bay)` / `AGV`:
 * every bay: machined seat ring under the flange back face (+3 centring pins) and a V-head (steel V + polymer liners,
   45 deg flanks) touching the pipe bottom near local x = 0.86; bay number plates A1..A6 (tier 0), B1..B5 (tier 1);
 * back side (x = BACK_X = -11.24): end columns, header with a sign and a mesh transom above the tier-1 spools, a hazard
-  bumper at the floor - it closes the fence opening `storage_back` (the light curtain itself is environment2's);
+  bumper at the floor - it closes the fence opening `storage_back` (the light curtain itself is environment2's); the
+  sign (both faces) reads [logo | text]: branding2's current brand on a white plate, the text in i18n2's current
+  language (texture / material sto_sign_<lang>_<brand>, drawn by build(); boxes: sign_logo_box, sign_text_box);
 * AGV (outside the fence, parked at AGV["park"]): chassis, drive wheels + casters, 2 lidars, bumpers, LED band,
   E-stops, lifting table (`sto_agv_lift`), amber beacon (`sto_agv_beacon`, object property 'beacon_on').
 
@@ -38,6 +40,9 @@ from cell import positioner as P1
 import layout2 as L2
 import kin
 import cassette as C
+import fonts2
+import i18n2
+import branding2
 
 NAME = "Storage"
 GAP = C.GAP
@@ -75,6 +80,8 @@ AGV_DECK_Z = 0.30                        # top of the chassis; lift plate rests 
 AGV_LIFT_MAX = 0.10
 LEGS_Y = (-END_Y,) + tuple(BAY_Y[1]) + (END_Y,)           # tier-0 girder legs (under the tier-1 posts + ends)
 COLS_Y = (-END_Y + 0.01, -1.08, 0.0, 1.08, END_Y - 0.01)    # tier-1 girder columns (0.12 wide)
+SIGN_PX = (1800, 118)                    # header sign texture (quad 1.30 x 0.085 m)
+SIGN_LOGO_PAD = 0.12                     # logo plate margin (fraction of its height, branding2.logo_plate)
 
 
 def _mats():
@@ -105,6 +112,70 @@ def _beacon_mat():
     b.inputs["Base Color"].default_value = (0.55, 0.22, 0.02, 1.0)
     b.inputs["Roughness"].default_value = 0.2
     b.inputs["Coat Weight"].default_value = 0.4
+    return m
+
+
+def sign_logo_box():
+    """(x0, y0, x1, y1) px of the logo plate on the header sign texture: left end, 16 px inside the edges."""
+    W, H = SIGN_PX
+    ph = H - 32
+    return (22, 16, 22 + ph * branding2.logo_aspect(pad=SIGN_LOGO_PAD), 16 + ph)
+
+
+def _sign_divider_x():
+    """Centre x (px) of the 5 px divider between the logo plate and the text, 22 px right of the plate."""
+    return sign_logo_box()[2] + 22
+
+
+def sign_text_box():
+    """(x0, y0, x1, y1) px the sign text stays inside (tests/t_i18n2.py): right of the divider, inside the 4 px black
+    rim (5..9 px from the edges)."""
+    W, H = SIGN_PX
+    return (_sign_divider_x() + 3, 9, W - 9, H - 9)
+
+
+def _sign_mat():
+    """Header sign, one C._label atlas cell in the C._label_mat look (yellow, 4 px black rim, bold black text):
+    [logo plate | divider | text centred in the rest, shrunk to 92 % of it]; text in the current language."""
+    key = f"sto_sign_{i18n2.get_lang()}_{branding2.get_brand()}"
+    m = bpy.data.materials.get(key)
+    if m is not None:
+        return m
+    from PIL import Image, ImageDraw
+    W, H = SIGN_PX
+    fg, bg = (20, 20, 20), (242, 180, 0)
+    img = Image.new("RGB", (W, H), bg)
+    d = ImageDraw.Draw(img)
+    d.rectangle((5, 5, W - 6, H - 6), outline=fg, width=4)
+    lb = sign_logo_box()
+    xd = _sign_divider_x()
+    d.rectangle((xd - 2, 16, xd + 2, H - 17), fill=fg)
+    t = i18n2.tr("СКЛАД ГОТОВЫХ СПУЛОВ · FINISHED SPOOLS")
+    xa, xb = xd + 24, W - 24
+    size = int(H * 0.60)
+    font = fonts2.truetype(C._FONT, size)
+    while font.getlength(t) > (xb - xa) * 0.92 and size > 10:
+        size -= 2
+        font = fonts2.truetype(C._FONT, size)
+    d.text(((xa + xb) / 2, H / 2), t, font=font, fill=fg, anchor="mm")
+    branding2.paste_logo(img, lb, plate=True, pad=SIGN_LOGO_PAD)
+    arr = np.asarray(img.convert("RGBA"), dtype=np.float32)[::-1] / 255.0
+    bi = bpy.data.images.new(key, W, H, alpha=True)
+    bi.colorspace_settings.name = 'sRGB'
+    bi.pixels.foreach_set(arr.ravel())
+    bi.pack()
+    m = bpy.data.materials.new(key)
+    m.use_nodes = True
+    nt = m.node_tree
+    bs = nt.nodes["Principled BSDF"]
+    bs.inputs["Roughness"].default_value = 0.45
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    tex.image = bi
+    tex.interpolation = 'Linear'
+    uv = nt.nodes.new("ShaderNodeUVMap")
+    nt.links.new(uv.outputs["UV"], tex.inputs["Vector"])
+    nt.links.new(tex.outputs["Color"], bs.inputs["Base Color"])
+    m["n_cells"] = 1
     return m
 
 
@@ -221,8 +292,7 @@ def _rack(b, M, lm):
     # panel in local XY (fence_mesh reads object-space x/y, as the stage-1 fence bays), stood upright along world Y
     E._mesh(b, "sto_back_mesh", [(0, 0, 0), (w, 0, 0), (w, zt1 - zt0, 0), (0, zt1 - zt0, 0)], [(0, 1, 2, 3)],
             M["fence"], (BACK_X, -w / 2, zt0), (math.pi / 2, 0, math.pi / 2))
-    sm = C._label_mat("sto_sign", ["СКЛАД ГОТОВЫХ СПУЛОВ · FINISHED SPOOLS"],
-                      cell=(1800, 118))
+    sm = _sign_mat()
     C._label(b, "sto_sign_in", sm, 0, (1.30, 0.085), (BACK_X + 0.0515, 0.0, BACK_H - 0.05), (math.pi / 2, 0, math.pi / 2))
     C._label(b, "sto_sign_out", sm, 0, (1.30, 0.085), (BACK_X - 0.0515, 0.0, BACK_H - 0.05), (math.pi / 2, 0, -math.pi / 2))
     C._bx(b, "sto_back_bumper", (0.06, 2 * BUMPER_HALF_Y, 0.12), (L2.LOG_FENCE_X0 + 0.035, 0.0, 0.06), M["hazard"], bev=0.006)

@@ -78,7 +78,8 @@ def logo_plate(brand=None, width=None, height=None, pad=0.16, radius=0.22, bg=PL
     pw = int(round(width if width is not None else height * k))
     ph = int(round(height))
     m = pad * ph
-    plate = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
+    # transparent corners carry the plate colour: a texture filter (bpy) blends the rim toward white, not black
+    plate = Image.new("RGBA", (pw, ph), (*bg[:3], 0))
     d = ImageDraw.Draw(plate)
     d.rounded_rectangle([0, 0, pw - 1, ph - 1], radius=int(radius * ph), fill=bg,
                         outline=outline, width=max(1, ph // 60) if outline else 0)
@@ -125,7 +126,8 @@ def logo_image(name, brand=None, height_px=512, plate=True):
 
 
 def logo_material(name, brand=None, height_px=512, plate=True, roughness=0.35, emission=0.0):
-    """Material with the logo texture (alpha-blended when plate=False).  emission > 0 for screens."""
+    """Material with the logo texture, alpha-blended (the plate's rounded corners are transparent as well as the bare
+    logo's background).  emission > 0 for screens."""
     import bpy
     m = bpy.data.materials.get(name)
     if m is not None:
@@ -141,10 +143,10 @@ def logo_material(name, brand=None, height_px=512, plate=True, roughness=0.35, e
     tex.interpolation = 'Cubic'
     tex.extension = 'CLIP'
     nt.links.new(tex.outputs["Color"], bs.inputs["Base Color"])
-    if not plate:
-        nt.links.new(tex.outputs["Alpha"], bs.inputs["Alpha"])
-        if hasattr(m, "surface_render_method"):
-            m.surface_render_method = 'DITHERED'
+    # alpha for the plate too: without it the transparent rounded corners rendered black
+    nt.links.new(tex.outputs["Alpha"], bs.inputs["Alpha"])
+    if hasattr(m, "surface_render_method"):
+        m.surface_render_method = 'DITHERED'
     if emission > 0:
         nt.links.new(tex.outputs["Color"], bs.inputs["Emission Color"])
         bs.inputs["Emission Strength"].default_value = emission

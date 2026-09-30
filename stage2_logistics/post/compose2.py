@@ -1,25 +1,37 @@
 #!/usr/bin/env python3
-"""Compose the stage-2 video from the EDL: new stage-2 shots (rendered PNG frames) + segments of the finished stage-1
-video (cut frame-accurately, not re-rendered), overlays over the stage-2 parts, synthesized soundtrack.
+"""Compose the stage-2 video of an edition from its EDL: stage-2 shots (rendered PNG frames) + (ru) segments of the
+finished stage-1 video (cut frame-accurately, not re-rendered), overlays, logos, synthesized soundtrack.
 
-    python3 stage2_logistics/post/compose2.py --frames <dir with frame_NNNN.png, SCENE numbering> --out <mp4>
-            [--edl post/edl.json] [--storyboard post/storyboard2.json] [--stage1 <stage-1 mp4>]
+    python3 stage2_logistics/post/compose2.py --edition ru|en --final             the deliverables of the edition:
+            frames out/frames_<ed> -> deliverables/demo_full_cycle_<ed>_<brand>_1080p.mp4 + _compact.mp4 (+ --verify
+            of the stage-1 splices when the edition has them)
+    python3 stage2_logistics/post/compose2.py --edition en --preview              out/preview_<ed> -> out/preview_<ed>.mp4
+    python3 stage2_logistics/post/compose2.py [--edition ru|en] --frames <dir with frame_NNNN.png, SCENE numbering>
+            --out <mp4> [--edl post/edl_<ed>.json] [--storyboard post/storyboard2_<ed>.json] [--stage1 <stage-1 mp4>]
             [--preview] [--no-audio] [--compact <mp4>] [--keep-temp] [--verify] [--threads N] [-v]
 
+--edition (default ru, editions.py) gives the defaults of --frames (frames_dir, --preview: preview_dir), --edl,
+--storyboard, --out (video, --preview: preview_video); explicit flags win.  A storyboard made for another edition or
+another EDL is refused.  ru ("video" mode) splices the stage-1 video; en ("render" mode) has only stage-2 segments (the
+stage-1 shots are rendered from the stage-2 scene), so it needs no stage-1 mp4 and has no splices to verify.
+
 Pipeline (one ffmpeg run, no intermediate encodes):
-  * edl.json segments in output order.  Consecutive stage-2 segments form a block; each block is one ffconcat list
+  * edl_<ed>.json segments in output order.  Consecutive stage-2 segments form a block; each block is one ffconcat list
     with one entry per OUTPUT frame -> the PNG of that scene frame.  A scene frame that was not rendered holds the
     nearest rendered frame <= it inside the same shot, or the first one after it (sparse preview renders, e.g.
     every 6th frame at 640x360, work; a final render should have them all - missing ones are reported).
     Block: setpts=N (exact 24 fps) -> scale 1920x1080 lanczos -> yuv444p -> overlays -> yuv420p.
   * stage-1 segment: the stage-1 mp4 decoded and cut with trim=start_frame=f0-1:end_frame=f1 (frame indices, so the
-    cut is exact), setpts=N; its frames are passed through untouched (no overlays: the stage-1 title, captions and
-    corner label are burned in).
-  * concat of all parts -> libx264 crf 18 (medium; veryfast with --preview) yuv420p +faststart, AAC 192 kbit/s
+    cut is exact), setpts=N; its frames are passed through untouched (no block overlays: the stage-1 title,
+    captions and corner label are burned in; only the corner logo goes over them, after the concat).
+  * concat of all parts -> the "whole" overlays (the corner logo: over the stage-2 blocks AND the stage-1 segments;
+    overlay in yuv420 on the concatenated stream, so only the logo pixels of the stage-1 frames change)
+    -> libx264 crf 18 (medium; veryfast with --preview) yuv420p +faststart, AAC 192 kbit/s
     from audio2.py; --compact adds a second output from the same graph (crf 25, preset slow, AAC 128 kbit/s, like
     the stage-1 compact deliverable).
-  * overlays (overlays2.render_all2): title / captions / end card with the stage-1 fades, one corner label per
-    stage-2 block (hard cut at the splices, where the stage-1 label continues).
+  * overlays (overlays2.render_all2): title + title logo / captions (render mode: also the translated stage-1
+    captions over the stage-1 shots) / end card with its logo, with the stage-1 fades; one corner label per stage-2
+    block (hard cut at the splices, where the stage-1 label continues; render mode: one over the whole video).
 Runs on Linux and Windows: only python (numpy, PIL) and ffmpeg/ffprobe on PATH; temp files in the system temp dir
 (tempfile), no symlinks.
 """
@@ -43,11 +55,12 @@ DEMO = S2_ROOT.parent / "demo_video"
 for _p in (str(DEMO), str(S2_ROOT), str(HERE)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+import editions                                    # noqa: E402  (stage2_logistics/editions.py)
 import overlays2                                   # noqa: E402
 import storyboard2                                 # noqa: E402
 
-EDL_JSON = HERE / "edl.json"
-SB2_JSON = HERE / "storyboard2.json"
+EDL_JSON = Path(editions.get()["edl_json"])        # default edition; per edition: editions.get(ed)["edl_json"]
+SB2_JSON = Path(editions.get()["storyboard_json"])
 OUT_W, OUT_H = 1920, 1080
 FRAME_RE = re.compile(r"frame_(\d+)\.png$", re.IGNORECASE)
 MAIN_CRF, COMPACT_CRF = 18, 25
@@ -55,7 +68,7 @@ MAIN_CRF, COMPACT_CRF = 18, 25
 
 def resolve(p) -> Optional[Path]:
     """A relative input path is taken from the current directory, else from stage2_logistics/ (so the documented
-    ``--edl post/edl.json`` works from the repository root too)."""
+    ``--edl post/edl_ru.json`` works from the repository root too)."""
     if p is None:
         return None
     q = Path(p)
@@ -147,16 +160,33 @@ def probe_video(path) -> dict:
     return {"width": int(st["width"]), "height": int(st["height"]), "fps": fps, "frames": nb}
 
 
+def edl_edition(E: dict) -> str:
+    return E.get("edition") or editions.DEFAULT
+
+
 def load_storyboard(path, E: dict) -> dict:
-    """storyboard2.json if present (must be made for this EDL), else built in memory from the EDL."""
-    if path and Path(path).is_file():
+    """The storyboard of the EDL's edition (``path`` None -> its storyboard_json; relative -> resolve()): it must be
+    made for this edition and this EDL and pass storyboard2.check() (brand, logos, timing: a storyboard written
+    before the editions has no logos and would give a video without the brand).  The edition's default file
+    missing -> built in memory from the EDL."""
+    default = Path(editions.get(edl_edition(E))["storyboard_json"])
+    path = resolve(path) if path else default
+    if path.is_file():
         sb = load_json(path)
+        ed_sb, ed_e = sb.get("edition", editions.DEFAULT), edl_edition(E)
+        regen = f"regenerate: python3 {S2_ROOT / 'edl.py'} --edition {ed_e}"
+        if ed_sb != ed_e:
+            raise SystemExit(f"{path} is the storyboard of the {ed_sb!r} edition, the EDL is {ed_e!r} "
+                             f"(use --edition {ed_e} or --storyboard {default})")
         if sb.get("edl_segments") != storyboard2.edl_signature(E):
-            raise SystemExit(f"{path} was generated for a different EDL - run: python3 {HERE / 'storyboard2.py'}")
+            raise SystemExit(f"{path} was generated for a different EDL - {regen}")
+        problems = storyboard2.check(sb, E)
+        if problems:
+            raise SystemExit(f"{path}: " + "; ".join(problems) + f" - {regen}")
         return sb
-    if path and Path(path) != SB2_JSON:
+    if path.resolve() != default.resolve():
         raise SystemExit(f"storyboard not found: {path}")
-    print("storyboard2.json not found - building it in memory from the EDL")
+    print(f"{path.name} not found - building it in memory from the EDL")
     return storyboard2.build(E)
 
 
@@ -188,8 +218,11 @@ class Graph:
         return out
 
 
-def add_overlays(g: Graph, cur: str, ovs: Sequence[overlays2.Overlay], block: dict, fps: int, tag: str) -> str:
-    """Chain the overlays on the block stream ``cur`` (block-local time, frame 0 = block out0); returns the label."""
+def add_overlays(g: Graph, cur: str, ovs: Sequence[overlays2.Overlay], block: dict, fps: int, tag: str,
+                 fmt_: str = "yuv444") -> str:
+    """Chain the overlays on the block stream ``cur`` (block-local time, frame 0 = block out0); returns the label.
+    ``fmt_``: the overlay filter's working format (yuv444 in the stage-2 blocks; yuv420 on the concatenated video,
+    whose stage-1 frames are yuv420p and must stay untouched outside the overlay)."""
     for j, ov in enumerate(ovs):
         k0 = ov.start - block["out0"]                 # first visible frame, block-local
         nfr = ov.end - ov.start + 1
@@ -208,15 +241,18 @@ def add_overlays(g: Graph, cur: str, ovs: Sequence[overlays2.Overlay], block: di
         g.chains.append(f"[{i}:v]{','.join(chain)}[{lab}]")
         nxt = f"v{tag}_{j}"
         q = 0.25 / fps
-        g.chains.append(f"[{cur}][{lab}]overlay=x={ov.x}:y={ov.y}:format=yuv444:eof_action=pass"
+        g.chains.append(f"[{cur}][{lab}]overlay=x={ov.x}:y={ov.y}:format={fmt_}:eof_action=pass"
                         f":enable='between(t,{fmt(a - q)},{fmt(b - q)})'[{nxt}]")
         cur = nxt
     return cur
 
 
 def assign_overlays(ovs: Sequence[overlays2.Overlay], parts: List[dict]) -> Dict[int, list]:
+    """Block overlays -> the stage-2 block containing them (the "whole" overlays are drawn after the concat)."""
     out: Dict[int, list] = {k: [] for k, p in enumerate(parts) if p["src"] == "s2"}
     for ov in ovs:
+        if getattr(ov, "whole", False):
+            continue
         for k, p in enumerate(parts):
             if p["src"] == "s2" and p["out0"] <= ov.start and ov.end <= p["out1"]:
                 out[k].append(ov)
@@ -241,13 +277,18 @@ def check_pngs(paths) -> List[str]:
     return bad
 
 
-def compose2(frames_dir, out_path, edl_path=EDL_JSON, storyboard=SB2_JSON, stage1=None, audio: bool = True,
+def compose2(frames_dir, out_path, edl_path=None, storyboard=None, stage1=None, audio: bool = True,
              preview: bool = False, compact=None, keep_temp: bool = False, threads: int = 0, verbose: bool = False,
-             soundtrack: Optional[str] = None, allow_missing: bool = False) -> str:
-    """Compose the stage-2 video; returns the output path.  ``soundtrack``: use this WAV instead of synthesizing."""
-    frames_dir, edl_path, storyboard = resolve(frames_dir), resolve(edl_path), resolve(storyboard)
+             soundtrack: Optional[str] = None, allow_missing: bool = False, edition: Optional[str] = None) -> str:
+    """Compose the video; returns the output path.  ``edl_path`` None -> the EDL of ``edition`` (None: default
+    edition); ``storyboard`` None -> the storyboard of the EDL's edition.  ``soundtrack``: this WAV instead of
+    synthesizing."""
+    edl_path = resolve(edl_path) if edl_path else Path(editions.get(edition)["edl_json"])
+    frames_dir, storyboard = resolve(frames_dir), resolve(storyboard)
     stage1, soundtrack = resolve(stage1), resolve(soundtrack)
     E = load_json(edl_path)
+    if edition and edl_edition(E) != editions.get(edition)["name"]:
+        raise SystemExit(f"{edl_path} is the EDL of the {edl_edition(E)!r} edition, not {edition!r}")
     sb = load_storyboard(storyboard, E)
     fps = int(E.get("fps", 24))
     n_frames = int(E["frames"])
@@ -298,6 +339,7 @@ def compose2(frames_dir, out_path, edl_path=EDL_JSON, storyboard=SB2_JSON, stage
     try:
         ovs = overlays2.render_all2(sb, tmp / "overlays")
         by_block = assign_overlays(ovs, parts)
+        whole = [ov for ov in ovs if getattr(ov, "whole", False)]
         g = Graph()
         labels = []
         for k, p in enumerate(parts):
@@ -317,8 +359,11 @@ def compose2(frames_dir, out_path, edl_path=EDL_JSON, storyboard=SB2_JSON, stage
                 g.chains.append(f"[{i}:v]trim=start_frame={p['f0'] - 1}:end_frame={p['f1']},settb=1/{fps},"
                                 f"setpts=N,setsar=1,format=yuv420p[p{k}]")
             labels.append(f"[p{k}]")
-        cat = f"{''.join(labels)}concat=n={len(parts)}:v=1:a=0"
-        g.chains.append(cat + ("[vcat];[vcat]split=2[vout][vcmp]" if compact else "[vout]"))
+        g.chains.append(f"{''.join(labels)}concat=n={len(parts)}:v=1:a=0[vcat0]")
+        # whole-video overlays (corner logo): output time, frame 0 = output frame 1; yuv420 keeps the stage-1
+        # frames bit-identical outside the logo
+        vcat = add_overlays(g, "vcat0", whole, {"out0": 1}, fps, "w", fmt_="yuv420") if whole else "vcat0"
+        g.chains.append(f"[{vcat}]" + ("split=2[vout][vcmp]" if compact else "null[vout]"))
 
         a_idx = None
         if audio:
@@ -399,10 +444,23 @@ def psnr(a, b) -> float:
     return 99.0 if mse <= 1e-10 else 10 * math.log10(255.0 ** 2 / mse)
 
 
-def verify_splices(out_mp4, edl_path=EDL_JSON, stage1=None, min_psnr: float = 30.0) -> List[dict]:
+def mask_boxes(sb: dict, pad: int = 8) -> List[Tuple[int, int, int, int]]:
+    """Pixel boxes drawn over the stage-1 video segments (the corner logo), padded for the chroma subsampling: the
+    splice check compares the rest of the frame."""
+    boxes = overlays2.logo_boxes(sb)
+    return [(max(0, x0 - pad), max(0, y0 - pad), min(OUT_W, x1 + pad), min(OUT_H, y1 + pad))
+            for name, (x0, y0, x1, y1) in boxes.items() if name == "corner"]
+
+
+def verify_splices(out_mp4, edl_path=EDL_JSON, stage1=None, min_psnr: float = 30.0,
+                   exclude: Sequence[Tuple[int, int, int, int]] = ()) -> List[dict]:
     """Compare the first and last output frame of every stage-1 segment with stage-1 frames f0/f1 and their
-    neighbours: the matching frame must reach ``min_psnr`` and beat both neighbours (frame-accurate cut)."""
+    neighbours: the matching frame must reach ``min_psnr`` and beat both neighbours (frame-accurate cut).  Pixels in
+    the ``exclude`` boxes (x0, y0, x1, y1) - the corner logo drawn over the stage-1 video - are not compared.
+    An EDL without stage-1 video segments (render mode) gives []."""
     E = load_json(resolve(edl_path))
+    if not any(s["src"] == "s1" for s in E["segments"]):
+        return []
     stage1 = resolve(stage1) if stage1 else (S2_ROOT / E["stage1_video"]).resolve()
     n1 = probe_video(stage1)["frames"]
     segs = [s for s in E["segments"] if s["src"] == "s1"]
@@ -413,6 +471,13 @@ def verify_splices(out_mp4, edl_path=EDL_JSON, stage1=None, min_psnr: float = 30
                     if 1 <= f <= n1]
     fo = extract_frames(out_mp4, want_out)
     fs = extract_frames(stage1, want_s1)
+    if exclude:
+        import numpy as np
+        keep = np.ones((OUT_H, OUT_W), bool)
+        for x0, y0, x1, y1 in exclude:
+            keep[y0:y1, x0:x1] = False
+        fo = {k: v[keep] for k, v in fo.items()}
+        fs = {k: v[keep] for k, v in fs.items()}
     res = []
     for s in segs:
         for o, f in ((s["out0"], s["f0"]), (s["out1"], s["f1"])):
@@ -425,11 +490,15 @@ def verify_splices(out_mp4, edl_path=EDL_JSON, stage1=None, min_psnr: float = 30
 
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--frames", required=True, help="folder with stage-2 frame_NNNN.png (scene frame numbers)")
-    ap.add_argument("--out", required=True, help="output mp4")
-    ap.add_argument("--edl", default=str(EDL_JSON))
-    ap.add_argument("--storyboard", default=str(SB2_JSON))
-    ap.add_argument("--stage1", default=None, help="stage-1 mp4 (default: edl.json stage1_video)")
+    editions.add_argument(ap)
+    ap.add_argument("--final", action="store_true", help="the edition's deliverables: --out <video> --compact <compact>"
+                    " (+ --verify when the edition splices the stage-1 video)")
+    ap.add_argument("--frames", default=None, help="folder with stage-2 frame_NNNN.png (scene frame numbers); default "
+                    "the edition's frames_dir (--preview: preview_dir)")
+    ap.add_argument("--out", default=None, help="output mp4 (default: the edition's video; --preview: preview_video)")
+    ap.add_argument("--edl", default=None, help="EDL (default: the edition's post/edl_<ed>.json)")
+    ap.add_argument("--storyboard", default=None, help="storyboard (default: the edition's post/storyboard2_<ed>.json)")
+    ap.add_argument("--stage1", default=None, help="stage-1 mp4 (default: the EDL's stage1_video; ru only)")
     ap.add_argument("--preview", action="store_true", help="fast x264 preset; sparse / low-res frames expected")
     ap.add_argument("--no-audio", action="store_true", help="no soundtrack")
     ap.add_argument("--compact", default=None, metavar="MP4", help="also write a compact encode (crf 25, slow, AAC 128k)")
@@ -440,15 +509,35 @@ def main(argv=None) -> None:
     ap.add_argument("--allow-missing", action="store_true", help="final encode even if some stage-2 frames are missing (held)")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args(argv)
-    out = compose2(a.frames, a.out, a.edl, a.storyboard, a.stage1, audio=not a.no_audio, preview=a.preview,
-                   compact=a.compact, keep_temp=a.keep_temp, threads=a.threads, verbose=a.verbose,
+    ed = editions.get(a.edition)
+    if a.final and a.preview:
+        raise SystemExit("--final and --preview exclude each other")
+    edl_path = resolve(a.edl) if a.edl else Path(ed["edl_json"])
+    E = load_json(edl_path)
+    if edl_edition(E) != ed["name"]:
+        raise SystemExit(f"{edl_path} is the EDL of the {edl_edition(E)!r} edition; pass --edition {edl_edition(E)}")
+    splices = any(s["src"] == "s1" for s in E["segments"])
+    storyboard = resolve(a.storyboard)            # once: the encode and the --verify step read the same file
+    frames = a.frames or (ed["preview_dir"] if a.preview else ed["frames_dir"])
+    out = a.out or (ed["preview_video"] if a.preview else ed["video"])
+    compact = a.compact or (ed["compact"] if a.final else None)
+    verify = a.verify or (a.final and splices)
+    print(f"edition {ed['name']}: {ed['label']}\n  frames {frames}\n  edl {edl_path}\n  out {out}"
+          + (f"\n  compact {compact}" if compact else ""))
+    out = compose2(frames, out, edl_path, storyboard, a.stage1, audio=not a.no_audio, preview=a.preview,
+                   compact=compact, keep_temp=a.keep_temp, threads=a.threads, verbose=a.verbose,
                    soundtrack=a.soundtrack, allow_missing=a.allow_missing)
     print(out)
-    if a.compact:
-        print(a.compact)
-    if a.verify:
+    if compact:
+        print(compact)
+    if verify:
+        if not splices:
+            print(f"verify: the {ed['name']} edition has no stage-1 video splices (the stage-1 shots are rendered from "
+                  f"the stage-2 scene) - nothing to check")
+            return
+        sb = load_storyboard(storyboard, E)
         bad = 0
-        for r in verify_splices(out, a.edl, a.stage1):
+        for r in verify_splices(out, edl_path, a.stage1, exclude=mask_boxes(sb)):
             nb = ", ".join(f"{d:+d}: {v:.1f}" for d, v in r["neighbours"].items())
             print(f"  out {r['out']:5d} = stage-1 {r['s1']:4d}: PSNR {r['psnr']:.1f} dB (neighbours {nb})"
                   f" {'ok' if r['ok'] else 'FAIL'}")
