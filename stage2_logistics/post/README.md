@@ -15,6 +15,7 @@
 | монтажный лист / раскадровка | `post/edl_ru.json`, `post/storyboard2_ru.json` | `post/edl_en.json`, `post/storyboard2_en.json` |
 | кадры (build2.py) | `out/frames_ru/` | `out/frames_en/` |
 | итог | `deliverables/demo_full_cycle_ru_pigrupp_1080p.mp4` (+ `_compact`) | `deliverables/demo_full_cycle_en_atomix_1080p.mp4` (+ `_compact`) |
+| промежуточная склейка (`--raw`: без оверлеев и звука) | `deliverables/demo_full_cycle_ru_pigrupp_1080p_raw.mp4` (на вставках этапа 1 — его вшитые титры) | `deliverables/demo_full_cycle_en_atomix_1080p_raw.mp4` (чистые кадры) |
 
 Тайминг у обеих редакций одинаковый: те же планы, те же точки склеек, та же длина, **тот же звук**.
 В `en` подписи этапа 1, которые видео этапа 1 показывает в использованных кадрах, рисуются заново по-английски
@@ -98,6 +99,8 @@ python3 stage2_logistics/post/compose2.py --edition ru --final   # out/frames_ru
                                                                  #   + _compact.mp4 + проверка склеек
 python3 stage2_logistics/post/compose2.py --edition en --final   # out/frames_en -> deliverables/…_en_atomix_1080p.mp4
                                                                  #   + _compact.mp4
+python3 stage2_logistics/post/compose2.py --edition ru --raw     # промежуточная склейка -> deliverables/…_ru_pigrupp_1080p_raw.mp4
+                                                                 #   (без оверлеев и звука; проверка склеек)
 python3 stage2_logistics/post/compose2.py --edition en --preview # out/preview_en (каждый 6-й кадр) -> out/preview_en.mp4
 python3 stage2_logistics/post/storyboard2.py [--edition ru|en|all]  # только раскадровки (после правки текстов)
 python3 stage2_logistics/post/audio2.py --edition ru --report    # только звук -> out/soundtrack2_ru.wav
@@ -110,6 +113,7 @@ python3 stage2_logistics/tests/t_post2.py [--edition ru|en|all]  # тест (~4 
 |---|---|
 | `--edition ru\|en` | редакция (по умолчанию `ru`): задаёт значения по умолчанию для `--frames`, `--edl`, `--storyboard`, `--out` |
 | `--final` | итоговые файлы редакции: `--out` = `deliverables/demo_full_cycle_<ed>_<brand>_1080p.mp4`, `--compact` = `…_compact.mp4`, плюс `--verify`, если в редакции есть склейки с видео этапа 1 |
+| `--raw` | промежуточная склейка редакции: `--out` = `deliverables/demo_full_cycle_<ed>_<brand>_1080p_raw.mp4`, `--no-overlays --no-audio`, плюс `--verify`, если есть склейки с видео этапа 1 |
 | `--frames DIR` | папка с `frame_NNNN.png`; номер = кадр **сцены** (по умолчанию `out/frames_<ed>`, с `--preview` — `out/preview_<ed>`) |
 | `--out FILE` | выходной mp4 (по умолчанию итоговый файл редакции, с `--preview` — `out/preview_<ed>.mp4`) |
 | `--edl FILE` | монтажный лист (по умолчанию `post/edl_<ed>.json`; монтажный лист другой редакции отвергается) |
@@ -117,6 +121,7 @@ python3 stage2_logistics/tests/t_post2.py [--edition ru|en|all]  # тест (~4 
 | `--stage1 FILE` | видео этапа 1 (по умолчанию `stage1_video` из EDL; нужно только `ru`) |
 | `--preview` | быстрый пресет x264; разреженные/маленькие кадры ожидаемы, без предупреждения |
 | `--no-audio` | без звуковой дорожки |
+| `--no-overlays` | без титула, подписей, логотипов, угловой метки и финальной карточки (вшитые титры этапа 1 на вставках `ru` остаются) |
 | `--compact FILE` | дополнительно компактная версия (crf 25, slow, AAC 128k) |
 | `--keep-temp` | сохранить PNG оверлеев, списки ffconcat, WAV и команду ffmpeg в `<out>_tmp/` |
 | `--verify` | после кодирования проверить склейки с этапом 1 (PSNR ≥ 30 дБ и лучше соседних кадров; область углового логотипа не сравнивается) |

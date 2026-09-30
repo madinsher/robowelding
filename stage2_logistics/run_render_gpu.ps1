@@ -61,6 +61,9 @@ if ($Step -in @("all", "compose")) {
         Write-Host "[5/5] Монтаж версии $ed с титрами, логотипом и звуком..."
         & $py stage2_logistics\post\compose2.py --edition $ed --final
         if ($LASTEXITCODE -ne 0) { throw "Монтаж версии $ed завершился с ошибкой (код $LASTEXITCODE), см. сообщения выше" }
+        Write-Host "[5/5] Промежуточная склейка версии $ed (без титров, логотипов и звука)..."
+        & $py stage2_logistics\post\compose2.py --edition $ed --raw
+        if ($LASTEXITCODE -ne 0) { throw "Промежуточная склейка версии $ed завершилась с ошибкой (код $LASTEXITCODE), см. сообщения выше" }
     }
-    Write-Host "Готово: stage2_logistics\deliverables\demo_full_cycle_<версия>_<логотип>_1080p.mp4 (+ _compact.mp4)"
+    Write-Host "Готово: stage2_logistics\deliverables\demo_full_cycle_<версия>_<логотип>_1080p.mp4 (+ _compact.mp4, _raw.mp4)"
 }

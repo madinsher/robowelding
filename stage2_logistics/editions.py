@@ -13,7 +13,7 @@ Fields:
                  "render" - render the stage-1 shots from the stage-2 scene (edl src "s2", shot "S1_...")
     edl_json / storyboard_json          written by edl.py, read by build2.py and post/compose2.py
     frames_dir / preview_dir / stills_dir  build2.py output folders (frames keep scene frame numbers)
-    video / compact                     post/compose2.py outputs
+    video / compact / raw               post/compose2.py outputs (raw: the pre-montage cut, no overlays / sound)
 """
 import os
 
@@ -39,6 +39,7 @@ for _k, _e in EDITIONS.items():
     _e.setdefault("preview_video", os.path.join(OUT, f"preview_{_k}.mp4"))
     _e.setdefault("video", os.path.join(DELIV, f"demo_full_cycle_{_k}_{_e['brand']}_1080p.mp4"))
     _e.setdefault("compact", os.path.join(DELIV, f"demo_full_cycle_{_k}_{_e['brand']}_1080p_compact.mp4"))
+    _e.setdefault("raw", os.path.join(DELIV, f"demo_full_cycle_{_k}_{_e['brand']}_1080p_raw.mp4"))
 
 
 def get(name=None):

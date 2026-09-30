@@ -5,10 +5,12 @@ finished stage-1 video (cut frame-accurately, not re-rendered), overlays, logos,
     python3 stage2_logistics/post/compose2.py --edition ru|en --final             the deliverables of the edition:
             frames out/frames_<ed> -> deliverables/demo_full_cycle_<ed>_<brand>_1080p.mp4 + _compact.mp4 (+ --verify
             of the stage-1 splices when the edition has them)
+    python3 stage2_logistics/post/compose2.py --edition ru|en --raw               the edition's pre-montage cut: the same
+            frames in the same order, no overlays and no soundtrack -> deliverables/..._1080p_raw.mp4 (+ --verify)
     python3 stage2_logistics/post/compose2.py --edition en --preview              out/preview_<ed> -> out/preview_<ed>.mp4
     python3 stage2_logistics/post/compose2.py [--edition ru|en] --frames <dir with frame_NNNN.png, SCENE numbering>
             --out <mp4> [--edl post/edl_<ed>.json] [--storyboard post/storyboard2_<ed>.json] [--stage1 <stage-1 mp4>]
-            [--preview] [--no-audio] [--compact <mp4>] [--keep-temp] [--verify] [--threads N] [-v]
+            [--preview] [--no-audio] [--no-overlays] [--compact <mp4>] [--keep-temp] [--verify] [--threads N] [-v]
 
 --edition (default ru, editions.py) gives the defaults of --frames (frames_dir, --preview: preview_dir), --edl,
 --storyboard, --out (video, --preview: preview_video); explicit flags win.  A storyboard made for another edition or
@@ -279,10 +281,12 @@ def check_pngs(paths) -> List[str]:
 
 def compose2(frames_dir, out_path, edl_path=None, storyboard=None, stage1=None, audio: bool = True,
              preview: bool = False, compact=None, keep_temp: bool = False, threads: int = 0, verbose: bool = False,
-             soundtrack: Optional[str] = None, allow_missing: bool = False, edition: Optional[str] = None) -> str:
+             soundtrack: Optional[str] = None, allow_missing: bool = False, edition: Optional[str] = None,
+             overlays: bool = True) -> str:
     """Compose the video; returns the output path.  ``edl_path`` None -> the EDL of ``edition`` (None: default
     edition); ``storyboard`` None -> the storyboard of the EDL's edition.  ``soundtrack``: this WAV instead of
-    synthesizing."""
+    synthesizing.  ``overlays`` False: no title, captions, logos, corner label or end card (the pre-montage cut; the
+    stage-1 segments of ru keep their burned-in stage-1 texts)."""
     edl_path = resolve(edl_path) if edl_path else Path(editions.get(edition)["edl_json"])
     frames_dir, storyboard = resolve(frames_dir), resolve(storyboard)
     stage1, soundtrack = resolve(stage1), resolve(soundtrack)
@@ -337,7 +341,7 @@ def compose2(frames_dir, out_path, edl_path=None, storyboard=None, stage1=None, 
     tmp = Path(tempfile.mkdtemp(prefix="post2_compose_"))
     t0 = time.time()
     try:
-        ovs = overlays2.render_all2(sb, tmp / "overlays")
+        ovs = overlays2.render_all2(sb, tmp / "overlays") if overlays else []
         by_block = assign_overlays(ovs, parts)
         whole = [ov for ov in ovs if getattr(ov, "whole", False)]
         g = Graph()
@@ -493,6 +497,8 @@ def main(argv=None) -> None:
     editions.add_argument(ap)
     ap.add_argument("--final", action="store_true", help="the edition's deliverables: --out <video> --compact <compact>"
                     " (+ --verify when the edition splices the stage-1 video)")
+    ap.add_argument("--raw", action="store_true", help="the edition's pre-montage cut: --out <raw>, --no-overlays"
+                    " --no-audio (+ --verify when the edition splices the stage-1 video)")
     ap.add_argument("--frames", default=None, help="folder with stage-2 frame_NNNN.png (scene frame numbers); default "
                     "the edition's frames_dir (--preview: preview_dir)")
     ap.add_argument("--out", default=None, help="output mp4 (default: the edition's video; --preview: preview_video)")
@@ -501,6 +507,7 @@ def main(argv=None) -> None:
     ap.add_argument("--stage1", default=None, help="stage-1 mp4 (default: the EDL's stage1_video; ru only)")
     ap.add_argument("--preview", action="store_true", help="fast x264 preset; sparse / low-res frames expected")
     ap.add_argument("--no-audio", action="store_true", help="no soundtrack")
+    ap.add_argument("--no-overlays", action="store_true", help="no title, captions, logos, corner label, end card")
     ap.add_argument("--compact", default=None, metavar="MP4", help="also write a compact encode (crf 25, slow, AAC 128k)")
     ap.add_argument("--keep-temp", action="store_true", help="keep overlays / ffconcat lists / wav in <out>_tmp/")
     ap.add_argument("--verify", action="store_true", help="check the stage-1 splices (PSNR) after encoding")
@@ -510,8 +517,8 @@ def main(argv=None) -> None:
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args(argv)
     ed = editions.get(a.edition)
-    if a.final and a.preview:
-        raise SystemExit("--final and --preview exclude each other")
+    if a.final + a.preview + a.raw > 1:
+        raise SystemExit("--final, --raw and --preview exclude each other")
     edl_path = resolve(a.edl) if a.edl else Path(ed["edl_json"])
     E = load_json(edl_path)
     if edl_edition(E) != ed["name"]:
@@ -519,14 +526,16 @@ def main(argv=None) -> None:
     splices = any(s["src"] == "s1" for s in E["segments"])
     storyboard = resolve(a.storyboard)            # once: the encode and the --verify step read the same file
     frames = a.frames or (ed["preview_dir"] if a.preview else ed["frames_dir"])
-    out = a.out or (ed["preview_video"] if a.preview else ed["video"])
+    out = a.out or (ed["preview_video"] if a.preview else ed["raw"] if a.raw else ed["video"])
     compact = a.compact or (ed["compact"] if a.final else None)
-    verify = a.verify or (a.final and splices)
+    verify = a.verify or ((a.final or a.raw) and splices)
+    overlays, audio = not (a.no_overlays or a.raw), not (a.no_audio or a.raw)
     print(f"edition {ed['name']}: {ed['label']}\n  frames {frames}\n  edl {edl_path}\n  out {out}"
-          + (f"\n  compact {compact}" if compact else ""))
-    out = compose2(frames, out, edl_path, storyboard, a.stage1, audio=not a.no_audio, preview=a.preview,
+          + (f"\n  compact {compact}" if compact else "")
+          + ("" if overlays else "\n  no overlays") + ("" if audio else "\n  no soundtrack"))
+    out = compose2(frames, out, edl_path, storyboard, a.stage1, audio=audio, preview=a.preview,
                    compact=compact, keep_temp=a.keep_temp, threads=a.threads, verbose=a.verbose,
-                   soundtrack=a.soundtrack, allow_missing=a.allow_missing)
+                   soundtrack=a.soundtrack, allow_missing=a.allow_missing, overlays=overlays)
     print(out)
     if compact:
         print(compact)
@@ -537,7 +546,7 @@ def main(argv=None) -> None:
             return
         sb = load_storyboard(storyboard, E)
         bad = 0
-        for r in verify_splices(out, edl_path, a.stage1, exclude=mask_boxes(sb)):
+        for r in verify_splices(out, edl_path, a.stage1, exclude=mask_boxes(sb) if overlays else ()):
             nb = ", ".join(f"{d:+d}: {v:.1f}" for d, v in r["neighbours"].items())
             print(f"  out {r['out']:5d} = stage-1 {r['s1']:4d}: PSNR {r['psnr']:.1f} dB (neighbours {nb})"
                   f" {'ok' if r['ok'] else 'FAIL'}")

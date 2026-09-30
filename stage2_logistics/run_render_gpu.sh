@@ -33,6 +33,8 @@ if [ "$STEP" = all ] || [ "$STEP" = compose ]; then
   for ED in $EDITIONS; do
     echo "[5/5] Монтаж версии $ED..."
     $PY stage2_logistics/post/compose2.py --edition "$ED" --final
+    echo "[5/5] Промежуточная склейка версии $ED (без титров, логотипов и звука)..."
+    $PY stage2_logistics/post/compose2.py --edition "$ED" --raw
   done
-  echo "Готово: stage2_logistics/deliverables/demo_full_cycle_<версия>_<логотип>_1080p.mp4 (+ _compact.mp4)"
+  echo "Готово: stage2_logistics/deliverables/demo_full_cycle_<версия>_<логотип>_1080p.mp4 (+ _compact.mp4, _raw.mp4)"
 fi
