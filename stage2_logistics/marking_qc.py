@@ -26,6 +26,12 @@ appears left to right = along the pipe axis, local +X) and 'hot' (0..1, glow: st
 afterglow on the rest).  An empty 'qc_mark_front' follows the writing front (drivers on 'reveal', with a small raster
 wobble across the text height); the marker beam and the spot light aim at it.
 
+HMI screen ('qc_display', atlas of the 4 states): texts in the current language of i18n2 (looked up while build() draws
+the texture), each shrunk to fit its box; the logo of branding2's current brand on a white plate at the right end of
+the footer bar.  Texture / material names carry both (qc_display_img_<lang>_<brand>, qc_display_<lang>_<brand>).
+The label atlas of the arch / cabinet (qc_label_<lang>) has its laser warning in the current language too; the text
+boxes of the screen atlas and of the decal are public (display_text_boxes, mark_text_box: tests/t_i18n2.py).
+
 Public API (DESIGN.md section 3, marking_qc.py):
     build(collection=None) -> dict(collection, root, carriage, marker, beam, scanner, sensor, tower, display,
                                    spot, led, objects, carriage_range)
@@ -98,6 +104,7 @@ MARK_X = (0.415, 0.545)
 MARK_W = 0.046
 MARK_R = L2.PIPE_R + 0.0006
 MARK_IMG = (1300, 460)
+MARK_DM = (50, 20)                  # decal DataMatrix: left edge, module pitch (px); the text lines start 50 px after it
 MARK_WOBBLE = (0.012, 90.0)        # raster wobble of the writing spot across the text: amplitude (m), frequency
 
 
@@ -207,6 +214,8 @@ def _chain_mat(key, space_obj=None):
 
 # ============================================================================ PIL images
 import fonts2  # noqa: E402
+import i18n2  # noqa: E402
+import branding2  # noqa: E402
 _FONT_B = fonts2.SANS_BOLD
 _FONT = fonts2.SANS
 
@@ -274,8 +283,8 @@ def _mark_image():
     # DataMatrix: 18 x 18 modules, 20 px each, left, vertically centred
     g = datamatrix_modules()
     n = g.shape[0]
-    mod = 20
-    x0, y0 = 50, (H - n * mod) // 2
+    x0, mod = MARK_DM
+    y0 = (H - n * mod) // 2
     for r in range(n):
         for c in range(n):
             if g[r, c]:
@@ -297,40 +306,96 @@ def _mark_image():
     return _to_bpy_image(name, img)
 
 
+def mark_text_box():
+    """(x0, y0, x1, y1) px the text lines of the decal stay inside (tests/t_i18n2.py): the cleaned patch right of the
+    DataMatrix (from the middle of the 50 px gap), inside the 2 x 3 px oxide rim."""
+    W, H = MARK_IMG
+    x0, mod = MARK_DM
+    return (x0 + datamatrix_modules().shape[0] * mod + 25, 6, W - 6, H - 6)
+
+
 DISPLAY_STATES = ("idle", "marking", "scanning", "ok")
+DISPLAY_CELL = (640, 400)              # one screen of the atlas (px)
+DISPLAY_HEAD = 56                      # header bar height (px): title left, DISPLAY_TAG right
+DISPLAY_TAG = "SPL-02"
+DISPLAY_FOOT = 44                      # footer bar height (px): job line left, logo plate right
+DISPLAY_LOGO_PAD = 0.12                # logo plate margin (fraction of the plate height, branding2.logo_plate)
+
+
+def _edition_key(base):
+    """Image / material name of an edition-dependent texture: language + brand, so a scene built for one edition never
+    picks up the other one's cached texture."""
+    return f"{base}_{i18n2.get_lang()}_{branding2.get_brand()}"
+
+
+def display_logo_box(k=0):
+    """(x0, y0, x1, y1) px of the logo plate in atlas cell k: right end of the footer bar, 5 px inside it."""
+    W, H = DISPLAY_CELL
+    ph = DISPLAY_FOOT - 10
+    pw = ph * branding2.logo_aspect(pad=DISPLAY_LOGO_PAD)
+    y1 = k * H + H - 5
+    return (W - 10 - pw, y1 - ph, W - 10, y1)
+
+
+def _display_tag_x():
+    """Left edge (px) of the header tag (DISPLAY_TAG, 30 px bold, right-aligned 18 px from the right edge)."""
+    return DISPLAY_CELL[0] - 18 - _font(_FONT_B, 30).getlength(DISPLAY_TAG)
+
+
+def display_text_boxes(k=0):
+    """Boxes (x0, y0, x1, y1) px the texts of atlas cell k stay inside (tests/t_i18n2.py checks every drawn text):
+    header title left of the tag (up to the middle of their 12 px gap), the tag, the body between the two bars, the
+    footer line left of the logo plate."""
+    W, H = DISPLAY_CELL
+    y0 = k * H
+    xs = _display_tag_x() - 6
+    yb = y0 + H - DISPLAY_FOOT
+    return [(0, y0, xs, y0 + DISPLAY_HEAD), (xs, y0, W, y0 + DISPLAY_HEAD), (0, y0 + DISPLAY_HEAD, W, yb),
+            (0, yb, display_logo_box(k)[0], y0 + H)]
 
 
 def _display_image():
-    """Vertical atlas of the 4 HMI screens (cell k = DISPLAY_STATES[k], top to bottom)."""
-    name = "qc_display_img"
+    """Vertical atlas of the 4 HMI screens (cell k = DISPLAY_STATES[k], top to bottom).  Texts in the current
+    language (i18n2, looked up here at draw time), each shrunk to fit its box; the brand's logo (branding2) on a white
+    plate at the right end of every footer bar."""
+    name = _edition_key("qc_display_img")
     bi = bpy.data.images.get(name)
     if bi is not None:
         return bi
     from PIL import Image, ImageDraw
-    W, H = 640, 400
+    tr = i18n2.tr
+    W, H = DISPLAY_CELL
     img = Image.new("RGB", (W, H * 4), (12, 16, 22))
     d = ImageDraw.Draw(img)
     fh = _font(_FONT_B, 30)
-    fb = _font(_FONT_B, 64)
     fs = _font(_FONT, 28)
+    fok = _font(_FONT_B, 30)
+    # header title from x = 18 to 12 px before the tag (the Russian title at 30 px ran into the tag)
+    title = tr("QC-01  МАРКИРОВКА / КОНТРОЛЬ")
+    ft = _fit(title, _FONT_B, 30, _display_tag_x() - 12 - 18)
+    big = lambda t: _fit(t, _FONT_B, 64, W - 60)            # noqa: E731  state title (SCANNING WELD B: 64 -> 54 px)
+    small = lambda t, w=W - 60: _fit(t, _FONT, 28, w)       # noqa: E731
+    foot = "WPS-07 · DN250 · C-01"
     for k, st in enumerate(DISPLAY_STATES):
         y0 = k * H
-        d.rectangle((0, y0, W, y0 + 56), fill=(31, 78, 140))
-        d.text((18, y0 + 28), "QC-01  МАРКИРОВКА / КОНТРОЛЬ", font=fh, fill=(235, 240, 245), anchor="lm")
-        d.text((W - 18, y0 + 28), "SPL-02", font=fh, fill=(242, 180, 0), anchor="rm")
-        foot = "WPS-07 · DN250 · C-01"
-        d.rectangle((0, y0 + H - 44, W, y0 + H), fill=(26, 32, 42))
-        d.text((18, y0 + H - 22), foot, font=fs, fill=(150, 160, 175), anchor="lm")
+        d.rectangle((0, y0, W, y0 + DISPLAY_HEAD), fill=(31, 78, 140))
+        d.text((18, y0 + DISPLAY_HEAD / 2), title, font=ft, fill=(235, 240, 245), anchor="lm")
+        d.text((W - 18, y0 + DISPLAY_HEAD / 2), DISPLAY_TAG, font=fh, fill=(242, 180, 0), anchor="rm")
+        d.rectangle((0, y0 + H - DISPLAY_FOOT, W, y0 + H), fill=(26, 32, 42))
+        d.text((18, y0 + H - 22), foot, font=small(foot, display_logo_box(k)[0] - 36), fill=(150, 160, 175), anchor="lm")
         if st == "idle":
-            d.text((W / 2, y0 + 170), "ОЖИДАНИЕ", font=fb, fill=(150, 160, 175), anchor="mm")
-            d.text((W / 2, y0 + 250), "паллета не на позиции", font=fs, fill=(110, 120, 135), anchor="mm")
+            t1, t2 = tr("ОЖИДАНИЕ"), tr("паллета не на позиции")
+            d.text((W / 2, y0 + 170), t1, font=big(t1), fill=(150, 160, 175), anchor="mm")
+            d.text((W / 2, y0 + 250), t2, font=small(t2), fill=(110, 120, 135), anchor="mm")
         elif st == "marking":
-            d.text((W / 2, y0 + 140), "МАРКИРОВКА", font=fb, fill=(255, 150, 40), anchor="mm")
-            d.text((W / 2, y0 + 205), "лазер 50 Вт · DataMatrix", font=fs, fill=(200, 205, 215), anchor="mm")
+            t1, t2 = tr("МАРКИРОВКА"), tr("лазер 50 Вт · DataMatrix")
+            d.text((W / 2, y0 + 140), t1, font=big(t1), fill=(255, 150, 40), anchor="mm")
+            d.text((W / 2, y0 + 205), t2, font=small(t2), fill=(200, 205, 215), anchor="mm")
             d.rectangle((60, y0 + 250, W - 60, y0 + 290), outline=(200, 205, 215), width=3)
             d.rectangle((66, y0 + 256, 66 + (W - 132) * 0.6, y0 + 284), fill=(255, 150, 40))
         elif st == "scanning":
-            d.text((W / 2, y0 + 115), "СКАН ШВА B", font=fb, fill=(90, 200, 255), anchor="mm")
+            t1 = tr("СКАН ШВА B")
+            d.text((W / 2, y0 + 115), t1, font=big(t1), fill=(90, 200, 255), anchor="mm")
             # bead profile plot: baseline with a reinforcement bump
             gx0, gx1, gy = 70, W - 70, y0 + 290
             d.rectangle((gx0 - 10, y0 + 170, gx1 + 10, y0 + 320), outline=(60, 70, 85), width=2)
@@ -342,16 +407,21 @@ def _display_image():
             d.line(pts, fill=(255, 60, 40), width=4)
             d.line((gx0, gy - 55, gx1, gy - 55), fill=(90, 200, 255), width=1)
         else:
-            d.text((W / 2, y0 + 125), "ГОДЕН · QC OK", font=fb, fill=(60, 230, 90), anchor="mm")
+            t1 = tr("ГОДЕН · QC OK")
+            d.text((W / 2, y0 + 125), t1, font=big(t1), fill=(60, 230, 90), anchor="mm")
             for i, t in enumerate(("Шов A", "Шов B", "Маркировка")):
+                t = tr(t)
                 yy = y0 + 200 + i * 42
-                d.text((150, yy), t, font=fs, fill=(210, 215, 225), anchor="lm")
-                d.text((W - 150, yy), "OK", font=_font(_FONT_B, 30), fill=(60, 230, 90), anchor="rm")
+                # item left at 150, "OK" right-aligned at W - 150: the item may use the width up to 20 px before "OK"
+                d.text((150, yy), t, font=small(t, W - 320 - fok.getlength("OK")), fill=(210, 215, 225), anchor="lm")
+                d.text((W - 150, yy), "OK", font=fok, fill=(60, 230, 90), anchor="rm")
+    for k in range(len(DISPLAY_STATES)):          # after the text: paste writes into img, the ImageDraw stays valid
+        branding2.paste_logo(img, display_logo_box(k), plate=True, pad=DISPLAY_LOGO_PAD)
     return _to_bpy_image(name, img)
 
 
 def _display_mat():
-    key = "qc_display"
+    key = _edition_key("qc_display")
     m = bpy.data.materials.get(key)
     if m is not None:
         return m
@@ -764,7 +834,8 @@ def build(collection=None):
     if collection is None:
         bpy.context.scene.collection.children.link(col)
     M = _mats()
-    lm = C._label_mat("qc_label", ["QC-01", "LASER KL.4", "LASER 50W"])
+    # arch / cabinet labels; cell 1 (laser warning) in the current language (i18n2.EN_LATIN), hence the name
+    lm = C._label_mat(f"qc_label_{i18n2.get_lang()}", ["QC-01", i18n2.tr("LASER KL.4"), "LASER 50W"])
     Rm = G.M(_root_tr())
     # ---- static portal: built in root-local coordinates, then moved under the root
     b = E._B(col)

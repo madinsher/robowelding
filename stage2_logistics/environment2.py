@@ -16,8 +16,14 @@ _box / _rod / _rev / _prism ...), so the new fence is indistinguishable from the
   the kit pallet bay, the storage rack and the output conveyor (outside their footprints);
 * zone controller cabinet (RAL 7035 like the stage-1 IRC5) with main switch, pilot lamps and a signal tower, outside
   the -Y fence near the cell corner; HMI pedestal next to it; cable trunking + tray on the fence top to a junction box;
-* zone signs (yellow plates with a black / red header band, warning triangle and Russian text) on the outside of the
-  fence, as a PIL-drawn texture atlas; the HMI screen shows a zone overview drawn the same way;
+* zone signs (yellow plates with a black / red header band, warning triangle and text) on the outside of the fence, as
+  a PIL-drawn texture atlas; the HMI screen shows a zone overview drawn the same way;
+* edition (editions.py): every text drawn into a texture (signs, HMI, cabinet name plate) is looked up in i18n2 while
+  build() draws it (SIGNS, HMI_BOXES etc. hold the Russian keys), each shrunk to fit its box (the boxes are public:
+  sign_text_boxes, hmi_text_boxes, checked by tests/t_i18n2.py); the logo of branding2's current brand sits on a white
+  plate at the right end of the HMI footer bar and as a plate on the cabinet door (CAB_LOGO_*).  Edition-dependent
+  texture / material names carry the language (and the brand): env2_signs_<lang>, env2_hmi_screen_<lang>_<brand>,
+  env2_label_cab_<lang>, logo_<brand>_plate;
 * muting: two slim black posts just outside the stage-1 light-curtain posts of the cell loading opening
   (MUTE_POS, y = +-MUTE_POS[1]) with crossed muting sensors and a warm-white / amber lamp (object property
   'muting_on', emission keyed by set_muting).
@@ -44,6 +50,8 @@ from cell import environment as E
 import layout2 as L2
 import kin
 import cassette as C
+import i18n2
+import branding2
 
 NAME = "Environment2"
 LIGHTS_NAME = "Environment2Lights"
@@ -86,6 +94,21 @@ CAB_S = (0.80, 0.40, 1.80)            # body (x, y, z) on a 0.10 plinth
 CAB_PLINTH = 0.10
 HMI_C = (-4.30, Y0 - 0.46)            # pedestal axis
 HMI_TILT = math.radians(20.0)
+HMI_PX = (640, 420)                   # HMI screen texture; footer bar (status line + logo plate) = bottom HMI_FOOT px
+HMI_FOOT = 58
+HMI_HEAD = 50                         # header bar height (px): title left, status dot right
+HMI_BOX = (160, 100)                  # material-flow box (px, 3 px outline): label 38 px under its top, status dot below
+HMI_BOXES = (("КАССЕТА", 30, 80, "g"), ("СТЕНД", 240, 80, "g"), ("ЯЧЕЙКА", 450, 80, "a"),      # (Russian key, left,
+             ("СКЛАД", 30, 230, "g"), ("КОНТРОЛЬ", 240, 230, "g"), ("КОНВЕЙЕР", 450, 230, "g"))  # top px, dot g/a)
+HMI_LOGO_PAD = 0.12                   # logo plate margin (fraction of its height, branding2.logo_plate)
+# brand plate on the cabinet door: in the column of the name plate (x = cx - 0.08), top 5.5 cm under the main-switch
+# plate (bottom z = pl + sz - 0.475), a quad 1.5 mm proud of the door face like the name plate (rounded corners from
+# the texture alpha, so no rectangular backing box).  The 0.11 m between the name plate and the door top are too low
+# for a 0.32 m plate (ПИГРУПП: 0.16 m high)
+CAB_LOGO_W = 0.32
+CAB_LOGO_DX = -0.08
+CAB_LOGO_TOP = CAB_PLINTH + CAB_S[2] - 0.53
+CAB_LOGO_PROUD = 0.0155               # from the door box's inner face yf (door 14 mm thick)
 # cable tray on the -Y fence top (outside)
 TRAY_Y = Y0 - 0.20
 TRAY_Z = 2.26                         # tray bottom
@@ -115,6 +138,10 @@ SIGNS = [
     dict(text=("ОСТОРОЖНО", "ВЫДАЧА ГОТОВЫХ", "ДВИЖЕНИЕ AGV", ""), bg="warn"),
     dict(text=("ОПАСНО", "АВТОМАТИЧЕСКИЙ", "РЕЖИМ", ""), bg="danger"),
 ]
+SIGN_PX = (640, 457)                  # one sign of the atlas (px); black rim 10 px wide, 6 px inside the cell edge
+SIGN_BAND = (16, 116)                 # header band: y range in the cell (px), x inside the rim
+SIGN_TRI = (118, 290, 170)            # warning triangle: centre x, y in the cell, size (px)
+SIGN_TEXT_X = 222                     # text lines: left edge (px), right of the triangle; width up to 28 px before W
 
 
 # ============================================================================ fence plan (pure python)
@@ -327,62 +354,93 @@ def _fit(d, text, w, size):
 
 def _sign_atlas_mat():
     """Vertical atlas of warning signs (SIGNS): yellow plate, black rim, red (or black) band with a white header,
-    black warning triangle, black text lines.  Cell k is mapped by C._label()."""
-    key = "env2_signs"
+    black warning triangle, black text lines (current language, i18n2.tr_lines).  Cell k is mapped by C._label()."""
+    key = f"env2_signs_{i18n2.get_lang()}"
     m = bpy.data.materials.get(key)
     if m is not None:
         return m
     from PIL import Image, ImageDraw
-    W, H = 640, 457
+    W, H = SIGN_PX
     img = Image.new("RGB", (W, H * len(SIGNS)), (242, 180, 0))
     d = ImageDraw.Draw(img)
     for k, s in enumerate(SIGNS):
         y0 = k * H
+        text = i18n2.tr_lines(s["text"])
         d.rectangle((6, y0 + 6, W - 7, y0 + H - 7), outline=(20, 20, 20), width=10)
         band = (200, 16, 46) if s["bg"] == "danger" else (20, 20, 20)
-        d.rectangle((16, y0 + 16, W - 17, y0 + 116), fill=band)
-        f = _fit(d, s["text"][0], W - 80, 72)
-        d.text((W / 2, y0 + 66), s["text"][0], font=f, fill=(255, 255, 255), anchor="mm")
+        d.rectangle((16, y0 + SIGN_BAND[0], W - 17, y0 + SIGN_BAND[1]), fill=band)
+        f = _fit(d, text[0], W - 80, 72)
+        d.text((W / 2, y0 + sum(SIGN_BAND) / 2), text[0], font=f, fill=(255, 255, 255), anchor="mm")
         # warning triangle with an exclamation mark
-        tx, ty, ts = 118, y0 + 290, 170
+        tx, ty, ts = SIGN_TRI[0], y0 + SIGN_TRI[1], SIGN_TRI[2]
         tri = [(tx, ty - ts * 0.58), (tx - ts / 2, ty + ts * 0.29), (tx + ts / 2, ty + ts * 0.29)]
         d.polygon(tri, fill=(20, 20, 20))
         inner = [(tx, ty - ts * 0.40), (tx - ts * 0.34, ty + ts * 0.20), (tx + ts * 0.34, ty + ts * 0.20)]
         d.polygon(inner, fill=(242, 180, 0))
         d.rectangle((tx - 8, ty - 38, tx + 8, ty + 6), fill=(20, 20, 20))
         d.rectangle((tx - 8, ty + 16, tx + 8, ty + 30), fill=(20, 20, 20))
-        lines = [t for t in s["text"][1:] if t]
+        lines = [t for t in text[1:] if t]
         size = 58
-        fonts = [_fit(d, t, W - 250, size) for t in lines]
+        fonts = [_fit(d, t, W - SIGN_TEXT_X - 28, size) for t in lines]
         size = min(f.size for f in fonts) if fonts else size
         f = _font(size)
         n = len(lines)
         for j, t in enumerate(lines):
-            yy = y0 + 290 + (j - (n - 1) / 2) * size * 1.18
-            d.text((222, yy), t, font=f, fill=(20, 20, 20), anchor="lm")
+            yy = ty + (j - (n - 1) / 2) * size * 1.18
+            d.text((SIGN_TEXT_X, yy), t, font=f, fill=(20, 20, 20), anchor="lm")
     m = _image_mat(key, img, rough=0.5)
     m["n_cells"] = len(SIGNS)
     return m
 
 
+def sign_text_boxes(k=0):
+    """Boxes (x0, y0, x1, y1) px the texts of sign k stay inside (tests/t_i18n2.py checks every drawn text): the
+    header band and the body right of the warning triangle, both inside the black rim."""
+    W, H = SIGN_PX
+    y0 = k * H
+    tx, _, ts = SIGN_TRI
+    return [(16, y0 + SIGN_BAND[0], W - 16, y0 + SIGN_BAND[1]), (tx + ts / 2, y0 + SIGN_BAND[1], W - 16, y0 + H - 16)]
+
+
+def hmi_text_boxes():
+    """Boxes (x0, y0, x1, y1) px the texts of the HMI screen stay inside (tests/t_i18n2.py checks every drawn text):
+    header bar left of the status dot, the label band of every flow box (inside its outline, above the status dot),
+    footer bar left of the logo plate."""
+    W, H = HMI_PX
+    bw = HMI_BOX[0]
+    return ([(0, 0, W - 46, HMI_HEAD)] + [(x + 3, y + 3, x + bw - 3, y + 62) for _, x, y, _ in HMI_BOXES]
+            + [(0, H - HMI_FOOT, hmi_logo_box()[0], H)])
+
+
+def hmi_logo_box():
+    """(x0, y0, x1, y1) px of the logo plate on the HMI texture: right end of the footer bar, 8 px inside it."""
+    W, H = HMI_PX
+    ph = HMI_FOOT - 16
+    pw = ph * branding2.logo_aspect(pad=HMI_LOGO_PAD)
+    return (W - 12 - pw, H - 8 - ph, W - 12, H - 8)
+
+
 def _hmi_mat():
-    """HMI screen: zone overview (material flow boxes with status dots), header and status line; emissive."""
-    key = "env2_hmi_screen"
+    """HMI screen: zone overview (material flow boxes with status dots), header and status line (current language,
+    i18n2), brand logo plate at the right end of the footer bar; emissive."""
+    key = f"env2_hmi_screen_{i18n2.get_lang()}_{branding2.get_brand()}"
     m = bpy.data.materials.get(key)
     if m is not None:
         return m
     from PIL import Image, ImageDraw
-    W, H = 640, 420
+    tr = i18n2.tr
+    W, H = HMI_PX
     img = Image.new("RGB", (W, H), (12, 20, 34))
     d = ImageDraw.Draw(img)
-    d.rectangle((0, 0, W, 50), fill=(26, 72, 140))
-    d.text((16, 25), "ЗОНА ЛОГИСТИКИ · АВТО", font=_font(26), fill=(240, 244, 250), anchor="lm")
+    d.rectangle((0, 0, W, HMI_HEAD), fill=(26, 72, 140))
+    t = tr("ЗОНА ЛОГИСТИКИ · АВТО")
+    d.text((16, HMI_HEAD / 2), t, font=_fit(d, t, W - 76, 26), fill=(240, 244, 250), anchor="lm")   # clear of the dot
     d.ellipse((W - 46, 13, W - 20, 39), fill=(46, 204, 64))
-    boxes = [("КАССЕТА", 30, 80, "g"), ("СТЕНД", 240, 80, "g"), ("ЯЧЕЙКА", 450, 80, "a"),
-             ("СКЛАД", 30, 230, "g"), ("КОНТРОЛЬ", 240, 230, "g"), ("КОНВЕЙЕР", 450, 230, "g")]
-    for t, x, y, st in boxes:
-        d.rectangle((x, y, x + 160, y + 100), fill=(20, 40, 70), outline=(90, 170, 240), width=3)
-        d.text((x + 80, y + 38), t, font=_fit(d, t, 140, 24), fill=(220, 232, 245), anchor="mm")
+    bw, bh = HMI_BOX
+    for t, x, y, st in HMI_BOXES:
+        t = tr(t)
+        d.rectangle((x, y, x + bw, y + bh), fill=(20, 40, 70), outline=(90, 170, 240), width=3)
+        d.text((x + bw / 2, y + 38), t, font=_fit(d, t, bw - 20, 24), fill=(220, 232, 245), anchor="mm")
         c = (46, 204, 64) if st == "g" else (255, 170, 20)
         d.ellipse((x + 68, y + 62, x + 92, y + 86), fill=c)
     for x0, y0, x1, y1 in ((190, 130, 240, 130), (400, 130, 450, 130), (530, 180, 530, 230), (450, 280, 400, 280),
@@ -392,8 +450,11 @@ def _hmi_mat():
         a1, a2 = ang + math.radians(150), ang - math.radians(150)
         d.polygon([(x1, y1), (x1 + 16 * math.cos(a1), y1 + 16 * math.sin(a1)), (x1 + 16 * math.cos(a2), y1 + 16 * math.sin(a2))],
                   fill=(240, 244, 250))
-    d.rectangle((0, H - 58, W, H), fill=(22, 30, 46))
-    d.text((16, H - 29), "SPL-02   ТАКТ 06:40   ЗАВЕСА: MUTING", font=_font(22), fill=(200, 212, 228), anchor="lm")
+    d.rectangle((0, H - HMI_FOOT, W, H), fill=(22, 30, 46))
+    lb = hmi_logo_box()
+    t = tr("SPL-02   ТАКТ 06:40   ЗАВЕСА: MUTING")
+    d.text((16, H - 29), t, font=_fit(d, t, lb[0] - 32, 22), fill=(200, 212, 228), anchor="lm")    # 16 px before the logo
+    branding2.paste_logo(img, lb, plate=True, pad=HMI_LOGO_PAD)
     return _image_mat(key, img, emission=1.3, rough=0.15)
 
 
@@ -408,8 +469,8 @@ def _mats():
         amber=materials.get("painted", color="#C87800", roughness=0.3, coat=0.3),
         red_lens=materials.get("painted", color="#7A0E0E", roughness=0.3, coat=0.3),
         frame=materials.get("painted", color="#2B2F36", roughness=0.5),
-        label_cab=C._label_mat("env2_label_cab", ["ШУ ЗОНЫ ЛОГИСТИКИ  =LZ1+CP01"], cell=(900, 96), fg=(235, 235, 235),
-                               bg=(40, 42, 46)),
+        label_cab=C._label_mat(f"env2_label_cab_{i18n2.get_lang()}", [i18n2.tr("ШУ ЗОНЫ ЛОГИСТИКИ  =LZ1+CP01")], cell=(900, 96),
+                               fg=(235, 235, 235), bg=(40, 42, 46)),
         label_mute=C._label_mat("env2_label_mute", ["MUTING"], cell=(320, 96)),
         label_jb=C._label_mat("env2_label_jb", ["=LZ1+JB02"], cell=(320, 96), fg=(235, 235, 235), bg=(40, 42, 46)),
     )
@@ -646,6 +707,12 @@ def _cabinet(b, M):
         E._rod(b, f"env2_cab_pilot{k}", 0.013, 0.016, mat, (cx + dx, yf - 0.026, pl + sz - 0.30), (math.pi / 2, 0, 0), 16)
     C._label(b, "env2_cab_label", M["label_cab"], 0, (0.40, 0.043), (cx - 0.08, yf - 0.0155, pl + sz - 0.17), (math.pi / 2, 0, 0),
              backing=None)
+    # brand plate (branding2's current brand) facing -Y (local +Z of the quad -> world -Y: rotx(+90 deg))
+    lh = CAB_LOGO_W / branding2.logo_aspect()
+    lg = branding2.logo_plate_object("env2_cab_logo", CAB_LOGO_W,
+                                     kin.tr(cx + CAB_LOGO_DX, yf - CAB_LOGO_PROUD, CAB_LOGO_TOP - lh / 2) @ kin.rotx(math.pi / 2),
+                                     collection=b.col)
+    b.objs += [lg] + list(lg.children)
     # ventilation: fan-filter grilles on the door (bottom) and the +X side (top)
     for k, (c, rot, size) in enumerate((((cx - 0.12, yf - 0.02, pl + 0.28), (0, 0, 0), (0.20, 0.012, 0.20)),
                                          ((cx + sx / 2 + 0.006, cy, pl + sz - 0.35), (0, 0, math.pi / 2), (0.20, 0.012, 0.20)))):

@@ -4,9 +4,14 @@
 кассета комплекта → сборочно-прихваточный стенд → робот-погрузчик загружает спул в сварочную ячейку → сварка
 (хореография этапа 1) → выгрузка → выходной рольганг → лазерная маркировка и контроль шва → стеллаж готовых (+ AGV).
 
-**Итоговое видео собирается монтажом:** новые сцены этапа 2 рендерятся, а сварка берётся из уже готового ролика
-этапа 1 (`demo_video/deliverables/demo_welding_cell_1080p.mp4`) без повторного рендера. Как получить итоговый
-рендер на машине с видеокартой — **`RENDER.md`**.
+**Две версии ролика** (`editions.py`, у всех команд `--edition ru|en`):
+
+* `ru` — русские титры и надписи, логотип **ПИГРУПП**; сварка берётся из уже готового ролика этапа 1
+  (`demo_video/deliverables/demo_welding_cell_1080p.mp4`) без повторного рендера;
+* `en` — английские титры и надписи в сцене (экраны, таблички), логотип **ATOMIX**; в видео этапа 1 вшиты русские
+  титры, поэтому его сварочные планы рендерятся заново из сцены этапа 2 теми же камерами (кадр в кадр).
+
+Как получить итоговый рендер обеих версий на машине с видеокартой — **`RENDER.md`**.
 
 ## Что сделано
 
@@ -20,13 +25,13 @@
 | Оборудование | `cassette.py`, `assembly_station.py`, `conveyor.py`, `marking_qc.py`, `storage.py` | кассета комплекта и буфер труб, стенд с пневмоприжимами и датчиком зазора, рольганг с паллетами-спутниками, портал маркировки/профилометра, ступенчатый стеллаж и AGV |
 | Окружение | `environment2.py` | ограждение зоны в стиле этапа 1, проёмы со световыми завесами, разметка пола, лампы muting, свет зоны |
 | Хореография | `plan2.py`, `animation2.py` | покадровый план всех машин (numpy, IK, перенос деталей «хват → держатель» без скачков), сварка этапа 1 встроена со сдвигом `WELD_OFFSET`; запекание F-кривых в Blender |
-| Камеры и монтаж | `cameras2.py`, `edl.py` | 15 новых планов (ещё 2 — запасные), привязанных к событиям хореографии; монтажный лист со вставкой кадров 97–456 и 541–930 ролика этапа 1 (стыки непрерывны по времени сцены) |
-| Сборка сцены | `build2.py` | одна команда: `--still`, `--preview`, `--render` (возобновляемый, воркеры), `--sketch`, `--save` |
-| Пост-обработка | `post/` | титры, подписи, финальная карточка со схемой потока, синтез звука, монтаж по EDL (`post/README.md`) |
+| Камеры и монтаж | `cameras2.py`, `edl.py` | 15 новых планов (ещё 2 — запасные), привязанных к событиям хореографии, и 9 сварочных планов этапа 1 (`S1_SHOTS`, для `en`); монтажные листы `post/edl_ru.json` (вставка кадров 97–456 и 541–930 ролика этапа 1, стыки непрерывны по времени сцены) и `post/edl_en.json` (те же кадры из сцены этапа 2) |
+| Версии, язык, логотипы | `editions.py`, `i18n2.py`, `branding2.py`, `assets/logos/` | таблица версий; перевод надписей в сцене; логотипы заказчика (очищены из присланных JPG, прозрачный фон): титул, угол кадра, финальная карточка, экраны HMI, шкаф управления, табличка стеллажа |
+| Сборка сцены | `build2.py` | одна команда: `--edition`, `--still`, `--preview`, `--render` (возобновляемый, воркеры), `--sketch`, `--save` |
+| Пост-обработка | `post/` | титры и подписи на двух языках, логотипы, финальная карточка со схемой потока, синтез звука, монтаж по EDL (`post/README.md`) |
 | RoboDK | `robodk/` | станция `PipeSpool_FullCycle`: этап 1 + погрузчик IRB 6700 на треке, прихваточный IRB 1600, оборудование, программы и `DemoCycle2` (`robodk/README.md`) |
 | Допущения | `ASSUMPTIONS.md` | принятые допущения и чек-лист данных от заказчика (§7 плана) |
-| Итоговое видео | `deliverables/` | `demo_full_cycle_1080p.mp4` — полный цикл, 1920×1080, 24 fps, 89,7 с, титры и звук; `demo_full_cycle_1080p_compact.mp4` — то же для пересылки; `demo_full_cycle_1080p_raw.mp4` — промежуточная склейка до монтажа: новые планы без титров и звука + вставки сварки этапа 1 (на них титры этапа 1 вшиты) |
-| Эскизы и превью | `deliverables/` | компоновка участка (`layout_top.png` — вид сверху, `layout_34.png` — 3/4, `build2.py --sketch`), середины всех новых планов монтажа (`preview_shots_640x360.jpg`) |
+| Эскизы и превью | `deliverables/` | компоновка участка (`layout_top.png` — вид сверху, `layout_34.png` — 3/4, `build2.py --sketch`), середины всех новых планов монтажа (`preview_shots_640x360.jpg`), сравнение версий `ru` / `en` (`editions_preview.jpg`) |
 
 ## Сценарий ролика (≈ 90 с)
 
@@ -48,9 +53,10 @@ python3 stage2_logistics/plan2.py                  # хореография: с�
 python3 stage2_logistics/tests/t_continuity2.py    # шаг суставов <= 6°/кадр, трек <= 2 м/с, детали без скачков
 python3 stage2_logistics/tests/t_collision2.py     # зазоры: роботы / детали / оборудование / ограждения, правило зон
 python3 stage2_logistics/tests/t_cameras2.py       # камеры: не внутри объектов, линия взгляда, объект съёмки в кадре
-python3 stage2_logistics/tests/t_build2.py         # сцена Blender (bpy) совпадает с планом: TCP, детали, маркеры, швы
-python3 stage2_logistics/edl.py                    # монтажный лист, post/edl.json + post/storyboard2.json
-python3 stage2_logistics/tests/t_post2.py          # монтаж на синтетических кадрах (стыки с этапом 1 по PSNR)
+python3 stage2_logistics/tests/t_build2.py [--edition en]   # сцена Blender = план: TCP, детали, маркеры, швы; en: камеры S1 = этап 1
+python3 stage2_logistics/tests/t_i18n2.py          # надписи в сцене: en без кириллицы, текст в своих рамках, логотипы
+python3 stage2_logistics/edl.py                    # монтажные листы и титры обеих версий: post/edl_<ed>.json, post/storyboard2_<ed>.json
+python3 stage2_logistics/tests/t_post2.py          # монтаж обеих версий на синтетических кадрах (ru: стыки с этапом 1 по PSNR)
 python3 stage2_logistics/tests/t_robodk2.py        # RoboDK-скрипт на mock Robolink (нужен pip install robodk)
 python3 stage2_logistics/tests/t_<модуль>.py       # стиллы отдельных модулей (Cycles 640x360) в out/tests/
 ```
@@ -59,11 +65,11 @@ python3 stage2_logistics/tests/t_<модуль>.py       # стиллы отде
 
 ```bash
 pip install "bpy==4.5.*" numpy pillow        # Python 3.11; ffmpeg в PATH
-python3 stage2_logistics/build2.py --shot S2_08_load --res 960 540          # пробный кадр
-python3 stage2_logistics/build2.py --render --samples 16                  # все новые кадры монтажа
-python3 stage2_logistics/post/compose2.py --frames stage2_logistics/out/frames \
-    --out stage2_logistics/deliverables/demo_full_cycle_1080p.mp4 \
-    --compact stage2_logistics/deliverables/demo_full_cycle_1080p_compact.mp4 --verify
+python3 stage2_logistics/build2.py --edition ru --shot S2_08_load --res 960 540     # пробный кадр
+python3 stage2_logistics/build2.py --edition ru --render --samples 16             # 1402 кадра -> out/frames_ru
+python3 stage2_logistics/build2.py --edition en --render --samples 16             # 2152 кадра -> out/frames_en
+python3 stage2_logistics/post/compose2.py --edition ru --final    # deliverables/demo_full_cycle_ru_pigrupp_1080p.mp4 (+ compact)
+python3 stage2_logistics/post/compose2.py --edition en --final    # deliverables/demo_full_cycle_en_atomix_1080p.mp4 (+ compact)
 ```
 
 Подробности, требования к GPU и решение проблем — `RENDER.md`.

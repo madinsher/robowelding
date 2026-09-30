@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """Stage-2 soundtrack for the OUTPUT timeline of the edit (numpy only, no samples, deterministic).
 
-    python3 stage2_logistics/post/audio2.py [--storyboard post/storyboard2.json] [--out out/soundtrack2.wav] [--report]
+    python3 stage2_logistics/post/audio2.py [--edition ru|en] [--storyboard post/storyboard2_<ed>.json]
+            [--out out/soundtrack2_<ed>.wav] [--report]
 
-Everything is read from storyboard2.json "audio" (output frames, written by storyboard2.py):
+Everything is read from storyboard2_<ed>.json "audio" (output frames, written by storyboard2.py).  Both editions
+have the same "audio" (storyboard2.plan_audio: the stage-1 layers of the stage-1 part come from the spliced stage-1
+video segments in the ru edit and from the re-rendered stage-1 shots in the en edit, the stage-2 layers from the
+stage-2 shots proper), so they get the same soundtrack:
 
   stage-1 layers (demo_video/post/audio.py, reused unchanged)
     ambience        audio.ambience, whole video, -32 dBFS RMS (one continuous room tone across the splices)
-    servo_intervals audio.servo, -27 dBFS: stage-1 robot/positioner moves inside the stage-1 segments (mapped with
-                    edl.map_intervals(src="s1")) + the stage-1 choreography seen in stage-2 shots (return home)
+    servo_intervals audio.servo, -27 dBFS: stage-1 robot/positioner moves inside the stage-1 part (mapped with
+                    edl.map_stage1_intervals) + the stage-1 choreography seen in stage-2 shots (return home)
     weld_intervals  audio.weld, -20 dBFS arc crackle + 50/100 Hz hum -32 dBFS, ignition clicks
-  stage-2 layers ("layers": scene intervals of edl.json mapped with edl.map_intervals(src="s2"); each piece is
+  stage-2 layers ("layers": scene intervals of edl_<ed>.json mapped with edl.map_intervals(src="s2") through the
+  stage-2 shots proper, not the re-rendered stage-1 shots; each piece is
   [out0, out1, real_start, real_end] - real_* = 0 where the edit cuts the interval)
     servo      handler / tack robot / positioner / QC axis: audio.servo transposed by "pitch" (resampling);
                pieces cut by a picture cut on both sides are joined so a move continues across the cut
@@ -434,12 +439,21 @@ def build_soundtrack2(sb: dict, out_path: str, duration_s: float = None) -> str:
 
 
 def main(argv=None) -> None:
-    ap = argparse.ArgumentParser(description="Synthesize the stage-2 soundtrack from storyboard2.json.")
-    ap.add_argument("--storyboard", default=str(HERE / "storyboard2.json"))
-    ap.add_argument("--out", default=str(HERE.parent / "out" / "soundtrack2.wav"))
+    if str(HERE.parent) not in sys.path:
+        sys.path.insert(0, str(HERE.parent))
+    import editions
+    ap = argparse.ArgumentParser(description="Synthesize the stage-2 soundtrack from storyboard2_<ed>.json.")
+    editions.add_argument(ap)
+    ap.add_argument("--storyboard", default=None, help="default: the edition's post/storyboard2_<ed>.json")
+    ap.add_argument("--out", default=None, help="default: out/soundtrack2_<ed>.wav")
     ap.add_argument("--duration", type=float, default=None, help="seconds (default: frames/fps)")
     ap.add_argument("--report", action="store_true", help="print per-layer levels")
     a = ap.parse_args(argv)
+    a.storyboard = a.storyboard or editions.get(a.edition)["storyboard_json"]
+    if not Path(a.storyboard).exists() and (HERE.parent / a.storyboard).exists():
+        a.storyboard = str(HERE.parent / a.storyboard)    # documented post/... form, run from the repository root
+    a.out = a.out or str(HERE.parent / "out" / f"soundtrack2_{editions.get(a.edition)['name']}.wav")
+    Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     with open(a.storyboard, encoding="utf-8") as fh:
         sb = json.load(fh)
     stems: Dict[str, np.ndarray] = {}

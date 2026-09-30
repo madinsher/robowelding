@@ -1,0 +1,1069 @@
+{
+ "edition": "en",
+ "lang": "en",
+ "stage1_mode": "render",
+ "brand": {
+  "key": "atomix",
+  "name": "ATOMIX",
+  "color": [
+   232,
+   31,
+   99
+  ],
+  "logo": "assets/logos/atomix.png"
+ },
+ "fps": 24,
+ "frames": 2152,
+ "resolution": [
+  1920,
+  1080
+ ],
+ "font": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+ "font_bold": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+ "title": {
+  "heading": "Pipe spool welding line: the full cycle",
+  "sub": "Kitting · fit-up and tack welding · cell loading · welding · marking and inspection · storage",
+  "start": 1,
+  "end": 94
+ },
+ "captions": [
+  {
+   "start": 108,
+   "end": 190,
+   "tag": "KITTING",
+   "text": "A loading robot on a linear track picks the parts from the kit cassette: the flange goes onto the fit-up station, where pneumatic clamps lock it",
+   "key": "flange",
+   "shot": "S2_02_flange"
+  },
+  {
+   "start": 198,
+   "end": 279,
+   "tag": "FIT-UP",
+   "text": "The elbow is set on the flange against centring stops and a V-block — the fixture sets the position, not manual marking-out",
+   "key": "elbow",
+   "shot": "S2_03_elbow"
+  },
+  {
+   "start": 287,
+   "end": 384,
+   "tag": "FIT-UP · ROOT GAP",
+   "text": "The pipe is laid in the cradle against the end stop; a sensor checks the root gap before tacking",
+   "key": "pipe",
+   "shot": "S2_04_pipe"
+  },
+  {
+   "start": 392,
+   "end": 481,
+   "tag": "TACK WELDING",
+   "text": "A compact welding robot places three tack welds on each joint — the assembly is secured without manual labour",
+   "key": "tack",
+   "shot": "S2_05_tackA"
+  },
+  {
+   "start": 489,
+   "end": 572,
+   "tag": "TRANSFER",
+   "text": "The tacked spool is picked up in one piece: one kit of parts — one spool",
+   "key": "carry",
+   "shot": "S2_07_pick"
+  },
+  {
+   "start": 580,
+   "end": 664,
+   "tag": "CELL LOADING",
+   "text": "Welding robot in its home position, light curtain muted: the loading robot sets the spool on the faceplate and the clamps lock the flange",
+   "key": "load",
+   "shot": "S2_08_load"
+  },
+  {
+   "start": 672,
+   "end": 741,
+   "tag": "HANDOVER TO WELDING",
+   "text": "The loading robot leaves the guarded area and the positioner turns the workpiece to the welding start position",
+   "key": "ready",
+   "shot": "S2_09_ready"
+  },
+  {
+   "start": 749,
+   "end": 839,
+   "tag": "PREPARATION",
+   "text": "The positioner tilts the workpiece to bring joint A into the flat position. The robot approaches along the track",
+   "key": "s1_setup",
+   "shot": "S1_C2_setup",
+   "s1": [
+    100,
+    190
+   ]
+  },
+  {
+   "start": 844,
+   "end": 887,
+   "tag": "PATH ADAPTATION",
+   "text": "A laser sensor on the torch scans the joint: the path is corrected to match the actual fit-up geometry",
+   "key": "s1_tracking",
+   "shot": "S1_C3a_laser",
+   "s1": [
+    195,
+    238
+   ]
+  },
+  {
+   "start": 894,
+   "end": 1101,
+   "tag": "WELD A · WORKPIECE ROTATION",
+   "text": "Weld A: flange to elbow. The workpiece rotates 360° while the torch stays at 12 o'clock, weaving across the joint",
+   "key": "s1_weld_a",
+   "shot": "S1_C3b_closeA",
+   "s1": [
+    245,
+    452
+   ]
+  },
+  {
+   "start": 1109,
+   "end": 1271,
+   "tag": "WELD B · SECTORS 1–2",
+   "text": "Weld B: elbow to pipe. Here the robot moves the torch: two 90° sectors, from 12 to 3 and from 12 to 9 o'clock",
+   "key": "s1_weld_b12",
+   "shot": "S1_C6a_closeB1",
+   "s1": [
+    544,
+    706
+   ]
+  },
+  {
+   "start": 1277,
+   "end": 1370,
+   "tag": "180° INDEXING",
+   "text": "The positioner flips the workpiece 180° over the top and the robot moves to the other side: the unwelded half of joint B is on top again",
+   "key": "s1_index",
+   "shot": "S1_C7_index",
+   "s1": [
+    712,
+    805
+   ]
+  },
+  {
+   "start": 1379,
+   "end": 1493,
+   "tag": "WELD B · SECTORS 3–4",
+   "text": "Sectors 3–4: after indexing, the whole seam is welded between the flat and vertical positions, never overhead",
+   "key": "s1_weld_b34",
+   "shot": "S1_C8a_closeB2",
+   "s1": [
+    814,
+    928
+   ]
+  },
+  {
+   "start": 1499,
+   "end": 1563,
+   "tag": "WELDING COMPLETE",
+   "text": "Both joints are welded: the welding robot returns home and the positioner brings the workpiece back to the unloading position",
+   "key": "done",
+   "shot": "S2_10_done"
+  },
+  {
+   "start": 1571,
+   "end": 1648,
+   "tag": "UNLOADING",
+   "text": "The faceplate clamps release the flange and the loading robot takes the spool out of the cell",
+   "key": "unload",
+   "shot": "S2_11_unload"
+  },
+  {
+   "start": 1656,
+   "end": 1713,
+   "tag": "OUTFEED CONVEYOR",
+   "text": "The spool is set on a carrier pallet and travels along the roller conveyor to the marking and QC station",
+   "key": "carrier",
+   "shot": "S2_12_carrier"
+  },
+  {
+   "start": 1721,
+   "end": 1774,
+   "tag": "MARKING",
+   "text": "A laser marker applies the spool ID and the WPS number — traceability down to every weld",
+   "key": "mark",
+   "shot": "S2_14_mark"
+  },
+  {
+   "start": 1782,
+   "end": 1869,
+   "tag": "INSPECTION",
+   "text": "A laser profilometer scans the weld and checks the bead geometry against tolerances; the result is stored under the spool ID",
+   "key": "scan",
+   "shot": "S2_15_scan"
+  },
+  {
+   "start": 1877,
+   "end": 2048,
+   "tag": "STORAGE",
+   "text": "The loading robot places the finished spool in the storage rack; the flange of the next kit is already on the fit-up station",
+   "key": "store",
+   "shot": "S2_16_store"
+  }
+ ],
+ "end_card": {
+  "start": 2053,
+  "end": 2152,
+  "heading": "Full cycle of the spool welding line",
+  "flow": [
+   "Kit cassette",
+   "Fit-up",
+   "Tack welding",
+   "Cell loading",
+   "Welding",
+   "Marking and QC",
+   "Rack · AGV"
+  ],
+  "kpis": [
+   "3 robots: track-mounted loading robot (150 kg class, 3.2 m reach), tack welding robot, track-mounted welding robot + 2-axis positioner",
+   "Clamping gripper with V-blocks for DN100–300, interchangeable jaws",
+   "Logistics runs in parallel with welding: the welding time sets the cycle time of the line",
+   "Every spool is traceable by its ID: weld parameters, QC result, storage location"
+  ],
+  "lines": [
+   "3 robots: track-mounted loading robot (150 kg class, 3.2 m reach), tack welding robot, track-mounted welding robot + 2-axis positioner",
+   "Clamping gripper with V-blocks for DN100–300, interchangeable jaws",
+   "Logistics runs in parallel with welding: the welding time sets the cycle time of the line",
+   "Every spool is traceable by its ID: weld parameters, QC result, storage location"
+  ],
+  "cta": "Stage 2 · Logistics and kitting · layout to be tailored to customer data"
+ },
+ "logos": {
+  "title": {
+   "x": 80,
+   "y": 64,
+   "height": 150,
+   "start": 1,
+   "end": 94,
+   "fade": 12
+  },
+  "corner": {
+   "x": 80,
+   "y": 40,
+   "height": 64,
+   "opacity": 1.0,
+   "start": 95,
+   "end": 2052,
+   "fade": 12
+  },
+  "end_card": {
+   "height": 120,
+   "start": 2053,
+   "end": 2152,
+   "fade": 14
+  }
+ },
+ "corner_label": "DEMO · SIMULATION · SPED UP",
+ "footer": "Demonstration 3D simulation · modelled on photos of the shop floor",
+ "corner_ranges": [
+  [
+   1,
+   2152
+  ]
+ ],
+ "s1_ranges": [],
+ "edl_segments": [
+  [
+   "s2",
+   1,
+   104,
+   1,
+   104
+  ],
+  [
+   "s2",
+   365,
+   454,
+   105,
+   194
+  ],
+  [
+   "s2",
+   862,
+   950,
+   195,
+   283
+  ],
+  [
+   "s2",
+   1042,
+   1146,
+   284,
+   388
+  ],
+  [
+   "s2",
+   1353,
+   1449,
+   389,
+   485
+  ],
+  [
+   "s2",
+   1555,
+   1645,
+   486,
+   576
+  ],
+  [
+   "s2",
+   1708,
+   1799,
+   577,
+   668
+  ],
+  [
+   "s2",
+   1860,
+   1936,
+   669,
+   745
+  ],
+  [
+   "s2",
+   1937,
+   2032,
+   746,
+   841
+  ],
+  [
+   "s2",
+   2033,
+   2080,
+   842,
+   889
+  ],
+  [
+   "s2",
+   2081,
+   2140,
+   890,
+   949
+  ],
+  [
+   "s2",
+   2141,
+   2296,
+   950,
+   1105
+  ],
+  [
+   "s2",
+   2381,
+   2488,
+   1106,
+   1213
+  ],
+  [
+   "s2",
+   2489,
+   2548,
+   1214,
+   1273
+  ],
+  [
+   "s2",
+   2549,
+   2650,
+   1274,
+   1375
+  ],
+  [
+   "s2",
+   2651,
+   2728,
+   1376,
+   1453
+  ],
+  [
+   "s2",
+   2729,
+   2770,
+   1454,
+   1495
+  ],
+  [
+   "s2",
+   2771,
+   2842,
+   1496,
+   1567
+  ],
+  [
+   "s2",
+   2991,
+   3075,
+   1568,
+   1652
+  ],
+  [
+   "s2",
+   3214,
+   3278,
+   1653,
+   1717
+  ],
+  [
+   "s2",
+   3436,
+   3496,
+   1718,
+   1778
+  ],
+  [
+   "s2",
+   3504,
+   3598,
+   1779,
+   1873
+  ],
+  [
+   "s2",
+   4193,
+   4326,
+   1874,
+   2007
+  ],
+  [
+   "s2",
+   4451,
+   4595,
+   2008,
+   2152
+  ]
+ ],
+ "audio": {
+  "ambience_db": -32.0,
+  "servo_db": -27.0,
+  "weld_db": -20.0,
+  "hum_db": -32.0,
+  "peak_db": -3.0,
+  "seed": 11,
+  "weld_intervals": [
+   [
+    893,
+    1102
+   ],
+   [
+    1109,
+    1187
+   ],
+   [
+    1217,
+    1271
+   ],
+   [
+    1379,
+    1427
+   ],
+   [
+    1457,
+    1493
+   ]
+  ],
+  "servo_intervals": [
+   [
+    746,
+    841
+   ],
+   [
+    842,
+    885
+   ],
+   [
+    1190,
+    1213
+   ],
+   [
+    1274,
+    1375
+   ],
+   [
+    1430,
+    1453
+   ],
+   [
+    1496,
+    1567
+   ]
+  ],
+  "layers": [
+   {
+    "name": "handler",
+    "type": "servo",
+    "kind": "handler",
+    "db": -28.0,
+    "pitch": 0.8,
+    "pan": -0.25,
+    "intervals": [
+     [
+      20,
+      102,
+      1,
+      1
+     ],
+     [
+      102,
+      104,
+      1,
+      0
+     ],
+     [
+      105,
+      138,
+      0,
+      1
+     ],
+     [
+      138,
+      155,
+      1,
+      1
+     ],
+     [
+      163,
+      180,
+      1,
+      1
+     ],
+     [
+      180,
+      194,
+      1,
+      0
+     ],
+     [
+      195,
+      205,
+      0,
+      1
+     ],
+     [
+      205,
+      229,
+      1,
+      1
+     ],
+     [
+      237,
+      261,
+      1,
+      1
+     ],
+     [
+      261,
+      283,
+      1,
+      0
+     ],
+     [
+      284,
+      284,
+      0,
+      1
+     ],
+     [
+      284,
+      314,
+      1,
+      1
+     ],
+     [
+      322,
+      352,
+      1,
+      1
+     ],
+     [
+      352,
+      387,
+      1,
+      1
+     ],
+     [
+      486,
+      510,
+      0,
+      1
+     ],
+     [
+      518,
+      540,
+      1,
+      1
+     ],
+     [
+      540,
+      564,
+      1,
+      1
+     ],
+     [
+      564,
+      576,
+      1,
+      0
+     ],
+     [
+      577,
+      633,
+      0,
+      1
+     ],
+     [
+      633,
+      642,
+      1,
+      1
+     ],
+     [
+      664,
+      668,
+      1,
+      0
+     ],
+     [
+      669,
+      699,
+      0,
+      1
+     ],
+     [
+      699,
+      709,
+      1,
+      1
+     ],
+     [
+      1568,
+      1615,
+      0,
+      1
+     ],
+     [
+      1615,
+      1624,
+      1,
+      1
+     ],
+     [
+      1644,
+      1652,
+      1,
+      0
+     ],
+     [
+      1653,
+      1688,
+      0,
+      1
+     ],
+     [
+      1688,
+      1705,
+      1,
+      1
+     ],
+     [
+      1713,
+      1717,
+      1,
+      0
+     ],
+     [
+      1718,
+      1778,
+      0,
+      0
+     ],
+     [
+      1779,
+      1829,
+      0,
+      1
+     ],
+     [
+      1829,
+      1846,
+      1,
+      1
+     ],
+     [
+      1854,
+      1871,
+      1,
+      1
+     ],
+     [
+      1871,
+      1873,
+      1,
+      0
+     ],
+     [
+      1874,
+      1942,
+      0,
+      1
+     ],
+     [
+      1942,
+      1991,
+      1,
+      1
+     ],
+     [
+      1999,
+      2007,
+      1,
+      0
+     ],
+     [
+      2008,
+      2027,
+      0,
+      1
+     ]
+    ]
+   },
+   {
+    "name": "tack_robot",
+    "type": "servo",
+    "kind": "tack",
+    "db": -30.0,
+    "pitch": 1.45,
+    "pan": 0.2,
+    "intervals": [
+     [
+      389,
+      394,
+      0,
+      1
+     ],
+     [
+      394,
+      400,
+      1,
+      1
+     ],
+     [
+      410,
+      416,
+      1,
+      1
+     ],
+     [
+      416,
+      422,
+      1,
+      1
+     ],
+     [
+      422,
+      432,
+      1,
+      1
+     ],
+     [
+      432,
+      438,
+      1,
+      1
+     ],
+     [
+      438,
+      444,
+      1,
+      1
+     ],
+     [
+      454,
+      460,
+      1,
+      1
+     ],
+     [
+      460,
+      466,
+      1,
+      1
+     ],
+     [
+      466,
+      480,
+      1,
+      1
+     ],
+     [
+      480,
+      485,
+      1,
+      0
+     ]
+    ]
+   },
+   {
+    "name": "positioner",
+    "type": "servo",
+    "kind": "positioner",
+    "db": -29.0,
+    "pitch": 0.7,
+    "pan": 0.1,
+    "intervals": [
+     [
+      679,
+      739,
+      1,
+      1
+     ]
+    ]
+   },
+   {
+    "name": "qc_axis",
+    "type": "servo",
+    "kind": "qc_move",
+    "db": -33.0,
+    "pitch": 1.8,
+    "pan": -0.35,
+    "intervals": [
+     [
+      1718,
+      1720,
+      0,
+      1
+     ],
+     [
+      1774,
+      1778,
+      1,
+      0
+     ],
+     [
+      1779,
+      1783,
+      0,
+      1
+     ],
+     [
+      1785,
+      1849,
+      1,
+      1
+     ],
+     [
+      1869,
+      1873,
+      1,
+      0
+     ]
+    ]
+   },
+   {
+    "name": "tack_arc",
+    "type": "tack_arc",
+    "kind": "tack_arc",
+    "db": -27.0,
+    "pan": 0.1,
+    "intervals": [
+     [
+      401,
+      409,
+      1,
+      1
+     ],
+     [
+      445,
+      453,
+      1,
+      1
+     ]
+    ]
+   },
+   {
+    "name": "clamp",
+    "type": "pneumatic",
+    "kind": "clamp",
+    "db": -29.0,
+    "pan": 0.15,
+    "intervals": [
+     [
+      182,
+      192,
+      1,
+      1
+     ],
+     [
+      275,
+      283,
+      1,
+      0
+     ],
+     [
+      366,
+      376,
+      1,
+      1
+     ]
+    ]
+   },
+   {
+    "name": "stud",
+    "type": "pneumatic",
+    "kind": "stud",
+    "db": -29.0,
+    "pan": 0.05,
+    "intervals": [
+     [
+      644,
+      656,
+      1,
+      1
+     ],
+     [
+      1632,
+      1644,
+      1,
+      1
+     ]
+    ]
+   },
+   {
+    "name": "gripper",
+    "type": "pneumatic",
+    "kind": "gripper",
+    "db": -33.0,
+    "pan": -0.2,
+    "soft": true,
+    "intervals": [
+     [
+      155,
+      163,
+      1,
+      1
+     ],
+     [
+      229,
+      237,
+      1,
+      1
+     ],
+     [
+      314,
+      322,
+      1,
+      1
+     ],
+     [
+      510,
+      518,
+      1,
+      1
+     ],
+     [
+      656,
+      664,
+      1,
+      1
+     ],
+     [
+      1624,
+      1632,
+      1,
+      1
+     ],
+     [
+      1705,
+      1713,
+      1,
+      1
+     ],
+     [
+      1846,
+      1854,
+      1,
+      1
+     ],
+     [
+      1991,
+      1999,
+      1,
+      1
+     ]
+    ]
+   },
+   {
+    "name": "conveyor",
+    "type": "conveyor",
+    "kind": "conveyor",
+    "db": -30.0,
+    "pan": -0.3,
+    "intervals": []
+   },
+   {
+    "name": "marker",
+    "type": "marker",
+    "kind": "marker",
+    "db": -31.0,
+    "pan": -0.3,
+    "intervals": [
+     [
+      1724,
+      1772,
+      1,
+      1
+     ]
+    ]
+   },
+   {
+    "name": "scan",
+    "type": "scan",
+    "kind": "scan",
+    "db": -32.0,
+    "pan": -0.3,
+    "intervals": [
+     [
+      1784,
+      1849,
+      1,
+      1
+     ]
+    ]
+   },
+   {
+    "name": "agv",
+    "type": "agv",
+    "kind": "agv",
+    "db": -31.0,
+    "pan": -0.4,
+    "intervals": [
+     [
+      1951,
+      2007,
+      1,
+      0
+     ],
+     [
+      2008,
+      2112,
+      0,
+      1
+     ]
+    ]
+   }
+  ],
+  "chime": {
+   "event": "qc_ok",
+   "db": -24.0,
+   "pan": -0.3,
+   "frames": [
+    1851
+   ]
+  },
+  "servo_tags": [],
+  "servo_pad_s": 0.25,
+  "weld_prefix": "ШОВ"
+ }
+}

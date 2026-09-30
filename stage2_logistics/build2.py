@@ -1,19 +1,31 @@
 #!/usr/bin/env python3
 """Build the stage-2 scene (stage-1 welding cell + logistics zone + full-cycle choreography) and render it.
 
+Every command takes --edition ru|en (editions.py, default ru): the language of the texts drawn in the scene (i18n2),
+the logo (branding2), the edit (post/edl_<ed>.json, written by edl.py) and the default output folders
+(out/frames_<ed>, out/preview_<ed>, out/stills_<ed>).
+    ru  the edit splices the finished stage-1 video for the welding part: 1402 scene frames to render
+    en  the stage-1 video has Russian titles burned in, so the welding part is rendered from this scene with the
+        stage-1 cameras (cameras2.S1_SHOTS, scene frame = stage-1 frame + WELD_OFFSET): all 2152 frames of the edit
+
     python3 build2.py --still 1332 [--res 960 540] [--engine CYCLES]     one frame (scene frame number)
     python3 build2.py --stills 115,512,1332                             several frames
     python3 build2.py --preview [--step 6]                              every 6th frame of the edit, 640x360
     python3 build2.py --render [--worker 0/2] [--first F --last F]      all frames of the edit (edl.py), 1920x1080,
                                                                         resumable: existing PNGs are skipped
+    python3 build2.py --edition en --render                             the English edition (stage-1 shots included)
     python3 build2.py --shot S2_08_load --render                        only the frames of one shot
     python3 build2.py --shot S2_08_load                                 the middle frame of one shot (test still)
+    python3 build2.py --edition en --shot S1_C3a_laser                  a stage-1 shot (en only: ru splices the video)
     python3 build2.py --sketch                                          layout sketches (top + 3/4) -> deliverables/
+                                                                        (en: layout_top_en.png, layout_34_en.png)
     python3 build2.py --save out/stage2.blend                           save the scene for inspection in Blender
     blender -b --python build2.py -- --render                           same options with the Blender app
 
-EEVEE (BLENDER_EEVEE_NEXT) is the default engine: it matches the look of the stage-1 video that the edit splices in.
-Frames are written as <outdir>/frame_NNNN.png with NNNN = scene frame; post/compose2.py assembles the video.
+EEVEE (BLENDER_EEVEE_NEXT) is the default engine: it matches the look of the stage-1 video (spliced into the ru edit,
+re-rendered for the en one with the stage-1 render settings).
+Frames are written as <outdir>/frame_NNNN.png with NNNN = scene frame; <outdir>/.plan_id = "<plan hash> <edition>"
+keeps one folder from mixing frames of two plans or two editions.  post/compose2.py assembles the video.
 """
 import argparse
 import os
@@ -25,7 +37,6 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import tools  # noqa: E402  (demo_video on sys.path)
 import bpy  # noqa: E402
-import numpy as np  # noqa: E402
 
 from cell import layout as L, geom as G, spool, positioner, robot_build, animation, environment, vfx  # noqa: E402
 import layout2 as L2  # noqa: E402
@@ -40,7 +51,21 @@ def _argv():
 
 
 # ============================================================================ scene
-def build_scene(with_env=True, with_vfx=True, verbose=True):
+def build_scene(with_env=True, with_vfx=True, verbose=True, edition=None):
+    """The whole stage-2 scene of an edition (editions.py name, None -> editions.DEFAULT).
+    Returns dict(scene, plan, modules, cams, edition)."""
+    import editions
+    import i18n2
+    import branding2
+    ed = editions.get(edition)
+    # language + logo first: every module below that draws a texture (signs, HMI screens, logo plates) reads them
+    i18n2.set_lang(ed["lang"])
+    branding2.set_brand(ed["brand"])
+    if verbose:
+        # ASCII only (not the Cyrillic ed["label"]): Windows encodes a redirected stdout (> render_ru.log, Tee-Object)
+        # with the locale code page, and cp1252 cannot write Cyrillic - the ru build would abort on this print
+        print(f"[build2] edition {ed['name']}: lang {ed['lang']}, brand {ed['brand']}, stage 1 {ed['stage1']}",
+              flush=True)
     t_all = time.time()
     bpy.ops.wm.read_factory_settings(use_empty=True)
     sc = bpy.context.scene
@@ -107,11 +132,18 @@ def build_scene(with_env=True, with_vfx=True, verbose=True):
         tack_iv = [tuple(iv) for iv in P["intervals"]["tack_arc"]]
         fx = vfx.build(tck["arc"], tack_iv)
         _limit_particle_caches(fx)
-        # the stage-1 arc effects at their embedded frames: the last seam's sparks and fume are still in the air when
-        # the edit cuts from the stage-1 video to the first "post" shot
+        # the stage-1 effects at their embedded frames (scene = stage-1 frame + WELD_OFFSET): the en edition renders
+        # the stage-1 shots from this scene, and in both editions the last seam's sparks and fume are still in the
+        # air when the edit cuts to the first "post" shot.  The arc is built on the stage-1 frames, then its keys
+        # move by WELD_OFFSET: its flicker (10 Hz sinusoid of the absolute frame + seeded noise) then repeats the
+        # stage-1 video frame by frame (built on the shifted frames it runs 240 degrees out of phase).
         off = P["weld_offset"]
-        fx1 = vfx.build(anim1["arc"], [(a + off, b + off) for a, b in anim1["weld_intervals"]])
+        fx1 = vfx.build(anim1["arc"], anim1["weld_intervals"])
+        _shift_arc_fx(fx1, off)
         _limit_particle_caches(fx1)
+        # seam-tracking laser of the stage-1 scan (shot C3a): the fan is ray cast onto the scene at every scan frame,
+        # so it is built on the embedded frames, after the keyframes have put the loaded spool on the positioner
+        vfx.laser_line(rob["torch"]["sensor"], [(a + off, b + off) for a, b in anim1["laser_intervals"]])
         scan_iv = [tuple(iv) for iv in P["intervals"]["scan"]]
         if scan_iv:
             marking_qc.scan_line(qc, scan_iv)
@@ -119,12 +151,14 @@ def build_scene(with_env=True, with_vfx=True, verbose=True):
         if verbose:
             print(f"[build2] vfx in {time.time() - t0:.1f}s", flush=True)
     import cameras2
-    cams = cameras2.build(sc, P["events"])
+    # the shots of both editions: the stage-1 shots (S1_*, event "weld_offset") are in the en edit only - ru splices
+    # the stage-1 video over their frames, so their markers are never reached by its renders
+    cams = cameras2.build(sc, cameras2.events_of(P), shots=cameras2.ALL_SHOTS)
     if verbose:
         npoly = sum(len(o.data.polygons) for o in bpy.data.objects if o.type == 'MESH')
         print(f"[build2] scene ready in {time.time() - t_all:.1f}s, {npoly} polygons", flush=True)
     sc.frame_set(1)
-    return dict(scene=sc, plan=P, modules=M, cams=cams)
+    return dict(scene=sc, plan=P, modules=M, cams=cams, edition=ed)
 
 
 def _extra_parts(prt, sto):
@@ -147,6 +181,18 @@ def _extra_parts(prt, sto):
 def _delete_tree(root):
     for ob in list(root.children_recursive) + [root]:
         bpy.data.objects.remove(ob, do_unlink=True)
+
+
+def _shift_arc_fx(fx, off):
+    """Move an arc effect built by vfx.build on the stage-1 timeline by `off` frames: the keys of the light energy,
+    the core / glow scale and the fume fade, and the emission range of every spark / droplet system."""
+    import animation2
+    for idb in (fx["light"].data, fx["core"], fx["glow"], fx["smoke"]):
+        animation2.shift_keys(idb, off)
+    for ps in fx["spark_emitter"].particle_systems:
+        st = ps.settings
+        st.frame_end = st.frame_end + off          # end first: setting a start beyond the end drags the end along
+        st.frame_start = st.frame_start + off
 
 
 def _limit_particle_caches(fx):
@@ -189,23 +235,37 @@ def setup_render(sc, engine, res, samples=None, quality="stage1", gpu=None):
         sc.cycles.device = 'GPU'
 
 
-def _stamp_plan(outdir, keep_stale=False):
-    """Frames of one render folder must come from one plan: write plan2's source hash into <outdir>/.plan_id and
-    refuse to mix frames of another plan (resumed renders would otherwise silently keep stale frames)."""
+def _stamp_plan(outdir, edition, keep_stale=False):
+    """Frames of one render folder must come from one plan and one edition: write "<plan2 source hash> <edition>"
+    into <outdir>/.plan_id and refuse to add frames of another plan (a resumed render would silently keep stale
+    frames) or of another edition (the texts and logos of the other language) to a folder that holds frames.
+    --keep-stale overrides a plan mismatch only.  A stamp without an edition predates the editions: Russian."""
+    import editions
     os.makedirs(outdir, exist_ok=True)
     stamp = os.path.join(outdir, ".plan_id")
-    pid = plan2._IMPORT_HASH
+    pid, ed = plan2._IMPORT_HASH, editions.get(edition)["name"]
     if os.path.exists(stamp):
-        old = open(stamp, encoding="utf-8").read().strip()
+        tok = open(stamp, encoding="utf-8").read().split()
+        old_pid = tok[0] if tok else ""
+        old_ed = tok[1] if len(tok) > 1 else "ru"          # stamped before the editions existed
         has_frames = any(n.startswith("frame_") for n in os.listdir(outdir))
-        if old != pid and has_frames and not keep_stale:
-            raise SystemExit(f"[build2] {outdir} holds frames of another plan ({old}, now {pid}): the choreography or"
-                             f" the edit changed. Move/delete those frames (or use a new --outdir), or pass --keep-stale.")
+        if old_ed != ed and has_frames:
+            raise SystemExit(f"[build2] {outdir} holds frames of the {old_ed!r} edition, this run renders {ed!r}: "
+                             f"use the {ed} folders (default out/frames_{ed}, out/preview_{ed}) or another --outdir.")
+        if old_pid != pid and has_frames and not keep_stale:
+            raise SystemExit(f"[build2] {outdir} holds frames of another plan ({old_pid}, now {pid}): the choreography"
+                             f" or the edit changed. Move/delete those frames (or use a new --outdir), or pass"
+                             f" --keep-stale.")
     with open(stamp, "w", encoding="utf-8") as fh:
-        fh.write(pid + "\n")
+        fh.write(f"{pid} {ed}\n")
 
 
 def render_frames(sc, frames, outdir, skip_existing=True, bake=True):
+    """Render `frames` to <outdir>/frame_NNNN.png.  bake=True (every run with effects) bakes the spark caches first:
+    besides the sparks themselves this keeps the robots on their keyframes - an unbaked spark system that resimulates
+    after a frame jump re-evaluates its emitter's parent chain (the welding / tack robot carrying the torch) at the
+    particles' birth times and leaves it there (Blender's evaluate_emitter_anim; measured on this scene: 6 of 150
+    random jumps into the arcs put the welding robot up to 0.24 m off its keys)."""
     os.makedirs(outdir, exist_ok=True)
     todo = [f for f in frames if not (skip_existing and os.path.exists(os.path.join(outdir, f"frame_{f:04d}.png")))]
     print(f"[render] {len(todo)} of {len(frames)} frames to render -> {outdir}", flush=True)
@@ -250,10 +310,10 @@ def _overhead_objects(sc, zmin=2.8):
     return out
 
 
-def sketches(sc, outdir, engine, samples):
+def sketches(sc, outdir, engine, samples, suffix=""):
     """Layout sketches at frame 1: orthographic top view and a 3/4 view of the whole area.  The hall roof deck is at
     9 m (trusses from 8 m): the top view clips everything above 7.4 m and hides the overhead equipment, the 3/4 camera
-    stands inside the hall under the trusses."""
+    stands inside the hall under the trusses.  Files: <outdir>/layout_top<suffix>.png, layout_34<suffix>.png."""
     import mathutils
     os.makedirs(outdir, exist_ok=True)
     for m in list(sc.timeline_markers):
@@ -287,7 +347,7 @@ def sketches(sc, outdir, engine, samples):
             ob.hide_render = True
         sc.camera = cam
         sc.frame_set(1)
-        p = os.path.join(outdir, name + ".png")
+        p = os.path.join(outdir, name + suffix + ".png")
         sc.render.filepath = p
         bpy.ops.render.render(write_still=True)
         for ob in hidden:
@@ -298,28 +358,53 @@ def sketches(sc, outdir, engine, samples):
 
 
 def _check_edl(E):
-    """The montage (post/compose2.py) reads post/edl.json: warn loudly if this scene's edit differs from it."""
+    """The montage (post/compose2.py) reads the edition's post/edl_<ed>.json: warn loudly if this scene's edit (E,
+    edl.build_edl of the same edition) differs from it."""
     import json
-    import edl as EDL
+    import editions
+    ed = editions.get(E["edition"])
+    path = ed["edl_json"]
+    rel = os.path.relpath(path, os.path.dirname(HERE))
+    cmd = f"python stage2_logistics/edl.py --edition {ed['name']}"
     try:
-        saved = json.load(open(EDL.EDL_JSON, encoding="utf-8"))
-    except OSError:
-        print("[build2] WARNING: post/edl.json missing - run: python stage2_logistics/edl.py", flush=True)
+        saved = json.load(open(path, encoding="utf-8"))
+    except (OSError, ValueError):
+        print(f"[build2] WARNING: {rel} missing or unreadable - run:  {cmd}", flush=True)
         return
-    sig = lambda e: [(s["src"], s.get("shot"), s["f0"], s["f1"]) for s in e["segments"]]
+    sig = lambda e: (e.get("edition", "ru"), [(s["src"], s.get("shot"), s["f0"], s["f1"]) for s in e["segments"]])
     if sig(saved) != sig(E):
-        print("[build2] WARNING: the edit of this scene differs from post/edl.json (code or plan changed).\n"
-              "          Run  python stage2_logistics/edl.py  before composing, or the frames will not match.", flush=True)
+        print(f"[build2] WARNING: the edit of this scene differs from {rel} (code or plan changed).\n"
+              f"          Run  {cmd}  before composing, or the frames will not match.", flush=True)
+
+
+def _edit_checks(E, a, ed):
+    """The requested --shot must be a rendered segment of the edition's edit (S1_* only where the stage-1 shots are
+    rendered); the saved post/edl_<ed>.json must match E (not for --sketch).  Returns the edit's s2 segments."""
+    import editions
+    segs = [s for s in E["segments"] if s["src"] == "s2"]
+    if a.shot and a.shot not in {s["shot"] for s in segs}:
+        why = (f" (the stage-1 shots are spliced from the stage-1 video in the {ed['name']} edition, rendered only in"
+               f" {', '.join(n for n in editions.names() if editions.get(n)['stage1'] == 'render')})"
+               if a.shot.startswith("S1_") and ed["stage1"] == "video" else "")
+        raise SystemExit(f"unknown shot {a.shot} in the {ed['name']} edit{why}; shots: {[s['shot'] for s in segs]}")
+    if not a.sketch:
+        _check_edl(E)
+    return segs
 
 
 # ============================================================================ main
 def main():
+    import editions
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--still", type=int)
-    ap.add_argument("--stills", type=str)
-    ap.add_argument("--preview", action="store_true", help="every --step-th frame of the edit at 640x360")
-    ap.add_argument("--render", action="store_true", help="every frame of the edit (edl.py) at 1920x1080")
-    ap.add_argument("--shot", type=str, help="restrict --preview/--render to one shot (cameras2 name); alone: its middle frame")
+    editions.add_argument(ap)
+    ap.add_argument("--still", type=int, help="render one scene frame (default outdir out/stills_<edition>)")
+    ap.add_argument("--stills", type=str, help="comma-separated scene frames")
+    ap.add_argument("--preview", action="store_true", help="every --step-th frame of the edit at 640x360 "
+                    "(default outdir out/preview_<edition>)")
+    ap.add_argument("--render", action="store_true", help="every frame of the edition's edit (post/edl_<edition>.json)"
+                    " at 1920x1080 (default outdir out/frames_<edition>): ru 1402 frames, en 2152")
+    ap.add_argument("--shot", type=str, help="restrict --preview/--render to one shot of the edition's edit (cameras2 "
+                    "name; S1_* stage-1 shots: en only); alone: its middle frame")
     ap.add_argument("--first", type=int, default=None, help="restrict to scene frames >= first")
     ap.add_argument("--last", type=int, default=None, help="restrict to scene frames <= last")
     ap.add_argument("--worker", type=str, default=None, help="k/K: render the k-th of K contiguous blocks")
@@ -333,14 +418,32 @@ def main():
     ap.add_argument("--no-vfx", action="store_true")
     ap.add_argument("--fx-off", type=str, default="", help="as demo_video/build.py --fx-off (profiling)")
     ap.add_argument("--save", type=str)
-    ap.add_argument("--sketch", action="store_true")
+    ap.add_argument("--sketch", action="store_true", help="layout sketches -> deliverables/ (en: *_en.png)")
     ap.add_argument("--outdir", type=str, default=None)
     ap.add_argument("--camera", type=str, help="force a camera (object name) for stills")
-    ap.add_argument("--keep-stale", action="store_true", help="resume into a folder rendered for another plan (not advised)")
+    ap.add_argument("--keep-stale", action="store_true", help="resume into a folder rendered for another plan (not "
+                    "advised; frames of another edition are always refused)")
     a = ap.parse_args(_argv())
+    ed = editions.get(a.edition)
+    # the edit needs only the plan: check it and the requested shot before the minutes-long scene build.  A plan that
+    # must be solved again (no plan2_<hash>.npz shipped or cached for these sources) needs the stage-1 trajectory
+    # cache, which only the scene build writes (animation.build, the first run on a fresh machine): then the checks
+    # wait for the scene
+    import edl as EDL
+    try:
+        P0 = plan2.solve(verbose=True)
+    except RuntimeError:                       # plan2.stage1_arrays: no stage-1 trajectory cache
+        print("[build2] no plan for these sources and no stage-1 trajectory cache yet: the scene build writes the"
+              " cache and solves the plan, the edit is checked after it", flush=True)
+        P0 = None
+    E = EDL.build_edl(P0, ed["name"]) if P0 is not None else None
+    segs = _edit_checks(E, a, ed) if E is not None else None
 
-    S = build_scene(with_env=not a.no_env, with_vfx=not a.no_vfx)
+    S = build_scene(with_env=not a.no_env, with_vfx=not a.no_vfx, edition=ed["name"])
     sc = S["scene"]
+    if E is None:
+        E = EDL.build_edl(S["plan"], ed["name"])
+        segs = _edit_checks(E, a, ed)
     if a.save:
         # with the render look applied (engine, AgX, shadows, samples) so the .blend reproduces the video
         setup_render(sc, a.engine, tuple(a.res or (1920, 1080)), a.samples, a.quality, a.gpu)
@@ -348,28 +451,24 @@ def main():
         print("saved", a.save)
     if a.sketch:
         setup_render(sc, a.engine, tuple(a.res or (1920, 1080)), a.samples or 16, a.quality, a.gpu)
-        sketches(sc, a.outdir or os.path.join(HERE, "deliverables"), a.engine, a.samples)
+        suffix = "" if ed["name"] == editions.DEFAULT else "_" + ed["name"]
+        sketches(sc, a.outdir or os.path.join(HERE, "deliverables"), a.engine, a.samples, suffix)
         return
 
-    import edl as EDL
-    E = EDL.build_edl(S["plan"])
-    _check_edl(E)
     frames = []
     if a.still is not None:
         frames = [a.still]
     elif a.stills:
         frames = [int(x) for x in a.stills.split(",") if x.strip()]
     elif a.shot and not (a.preview or a.render):
-        seg = [s for s in E["segments"] if s["src"] == "s2" and s["shot"] == a.shot]
-        if not seg:
-            raise SystemExit(f"unknown shot {a.shot}; shots: {[s['shot'] for s in E['segments'] if s['src'] == 's2']}")
+        seg = [s for s in segs if s["shot"] == a.shot]
         frames = [(seg[0]["f0"] + seg[0]["f1"]) // 2]
     elif a.preview or a.render:
-        segs = [s for s in E["segments"] if s["src"] == "s2" and (a.shot is None or s["shot"] == a.shot)]
+        sel = [s for s in segs if a.shot is None or s["shot"] == a.shot]
         if a.preview:
-            frames = sorted({f for s in segs for f in range(s["f0"], s["f1"] + 1, a.step)} | {s["f1"] for s in segs})
+            frames = sorted({f for s in sel for f in range(s["f0"], s["f1"] + 1, a.step)} | {s["f1"] for s in sel})
         else:
-            frames = sorted({f for s in segs for f in range(s["f0"], s["f1"] + 1)})
+            frames = sorted({f for s in sel for f in range(s["f0"], s["f1"] + 1)})
     if a.first is not None:
         frames = [f for f in frames if f >= a.first]
     if a.last is not None:
@@ -390,9 +489,9 @@ def main():
         for m in list(sc.timeline_markers):
             sc.timeline_markers.remove(m)
         sc.camera = bpy.data.objects[a.camera]
-    outdir = a.outdir or os.path.join(OUT, "frames" if a.render else "preview_frames" if a.preview else "stills")
+    outdir = a.outdir or (ed["frames_dir"] if a.render else ed["preview_dir"] if a.preview else ed["stills_dir"])
     if a.render or a.preview:
-        _stamp_plan(outdir, a.keep_stale)
+        _stamp_plan(outdir, ed["name"], a.keep_stale)
     render_frames(sc, frames, outdir, skip_existing=bool(a.render or a.preview), bake=not a.no_vfx)
 
 
