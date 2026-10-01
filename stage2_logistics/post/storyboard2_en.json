@@ -18,11 +18,12 @@
   1920,
   1080
  ],
- "font": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
- "font_bold": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+ "font": "FiraSans-Regular.ttf",
+ "font_bold": "FiraSans-Medium.ttf",
+ "font_light": "FiraSans-Light.ttf",
  "title": {
-  "heading": "Pipe spool welding line: the full cycle",
-  "sub": "Kitting · fit-up and tack welding · cell loading · welding · marking and inspection · storage",
+  "heading": "Pipe spool welding: the full cycle",
+  "sub": "From a kit of parts to the storage rack",
   "start": 1,
   "end": 94
  },
@@ -30,8 +31,8 @@
   {
    "start": 108,
    "end": 190,
-   "tag": "KITTING",
-   "text": "A loading robot on a linear track picks the parts from the kit cassette: the flange goes onto the fit-up station, where pneumatic clamps lock it",
+   "tag": "PARTS FEED",
+   "text": "The robot places the flange on the fixture",
    "key": "flange",
    "shot": "S2_02_flange"
   },
@@ -39,15 +40,15 @@
    "start": 198,
    "end": 279,
    "tag": "FIT-UP",
-   "text": "The elbow is set on the flange against centring stops and a V-block — the fixture sets the position, not manual marking-out",
+   "text": "The elbow seats on the flange against stops",
    "key": "elbow",
    "shot": "S2_03_elbow"
   },
   {
    "start": 287,
    "end": 384,
-   "tag": "FIT-UP · ROOT GAP",
-   "text": "The pipe is laid in the cradle against the end stop; a sensor checks the root gap before tacking",
+   "tag": "GAP CHECK",
+   "text": "Pipe laid against the stop, a sensor checks the gap",
    "key": "pipe",
    "shot": "S2_04_pipe"
   },
@@ -55,7 +56,7 @@
    "start": 392,
    "end": 481,
    "tag": "TACK WELDING",
-   "text": "A compact welding robot places three tack welds on each joint — the assembly is secured without manual labour",
+   "text": "The robot places three tack welds on each joint",
    "key": "tack",
    "shot": "S2_05_tackA"
   },
@@ -63,7 +64,7 @@
    "start": 489,
    "end": 572,
    "tag": "TRANSFER",
-   "text": "The tacked spool is picked up in one piece: one kit of parts — one spool",
+   "text": "The loading robot lifts the tacked spool",
    "key": "carry",
    "shot": "S2_07_pick"
   },
@@ -71,15 +72,15 @@
    "start": 580,
    "end": 664,
    "tag": "CELL LOADING",
-   "text": "Welding robot in its home position, light curtain muted: the loading robot sets the spool on the faceplate and the clamps lock the flange",
+   "text": "Spool on the faceplate, clamps hold it",
    "key": "load",
    "shot": "S2_08_load"
   },
   {
    "start": 672,
    "end": 741,
-   "tag": "HANDOVER TO WELDING",
-   "text": "The loading robot leaves the guarded area and the positioner turns the workpiece to the welding start position",
+   "tag": "READY TO WELD",
+   "text": "The cell is clear, welding starts",
    "key": "ready",
    "shot": "S2_09_ready"
   },
@@ -87,7 +88,7 @@
    "start": 749,
    "end": 839,
    "tag": "PREPARATION",
-   "text": "The positioner tilts the workpiece to bring joint A into the flat position. The robot approaches along the track",
+   "text": "Positioner presents joint A, the robot moves in",
    "key": "s1_setup",
    "shot": "S1_C2_setup",
    "s1": [
@@ -98,8 +99,8 @@
   {
    "start": 844,
    "end": 887,
-   "tag": "PATH ADAPTATION",
-   "text": "A laser sensor on the torch scans the joint: the path is corrected to match the actual fit-up geometry",
+   "tag": "SEAM FINDING",
+   "text": "Laser finds the seam",
    "key": "s1_tracking",
    "shot": "S1_C3a_laser",
    "s1": [
@@ -110,8 +111,8 @@
   {
    "start": 894,
    "end": 1101,
-   "tag": "WELD A · WORKPIECE ROTATION",
-   "text": "Weld A: flange to elbow. The workpiece rotates 360° while the torch stays at 12 o'clock, weaving across the joint",
+   "tag": "WELD A · PART ROTATES",
+   "text": "Flange to elbow: the part rotates, the torch stays on top",
    "key": "s1_weld_a",
    "shot": "S1_C3b_closeA",
    "s1": [
@@ -123,7 +124,7 @@
    "start": 1109,
    "end": 1271,
    "tag": "WELD B · SECTORS 1–2",
-   "text": "Weld B: elbow to pipe. Here the robot moves the torch: two 90° sectors, from 12 to 3 and from 12 to 9 o'clock",
+   "text": "Elbow to pipe: the robot moves the torch, two 90° sectors",
    "key": "s1_weld_b12",
    "shot": "S1_C6a_closeB1",
    "s1": [
@@ -134,8 +135,8 @@
   {
    "start": 1277,
    "end": 1370,
-   "tag": "180° INDEXING",
-   "text": "The positioner flips the workpiece 180° over the top and the robot moves to the other side: the unwelded half of joint B is on top again",
+   "tag": "180° TURN",
+   "text": "The positioner flips the part, the robot relocates",
    "key": "s1_index",
    "shot": "S1_C7_index",
    "s1": [
@@ -147,7 +148,7 @@
    "start": 1379,
    "end": 1493,
    "tag": "WELD B · SECTORS 3–4",
-   "text": "Sectors 3–4: after indexing, the whole seam is welded between the flat and vertical positions, never overhead",
+   "text": "Second half of weld B: on top again, never overhead",
    "key": "s1_weld_b34",
    "shot": "S1_C8a_closeB2",
    "s1": [
@@ -159,7 +160,7 @@
    "start": 1499,
    "end": 1563,
    "tag": "WELDING COMPLETE",
-   "text": "Both joints are welded: the welding robot returns home and the positioner brings the workpiece back to the unloading position",
+   "text": "Both welds done, robot retracts",
    "key": "done",
    "shot": "S2_10_done"
   },
@@ -167,15 +168,15 @@
    "start": 1571,
    "end": 1648,
    "tag": "UNLOADING",
-   "text": "The faceplate clamps release the flange and the loading robot takes the spool out of the cell",
+   "text": "Clamps release, the robot takes the spool",
    "key": "unload",
    "shot": "S2_11_unload"
   },
   {
    "start": 1656,
    "end": 1713,
-   "tag": "OUTFEED CONVEYOR",
-   "text": "The spool is set on a carrier pallet and travels along the roller conveyor to the marking and QC station",
+   "tag": "CONVEYOR",
+   "text": "On its way to inspection",
    "key": "carrier",
    "shot": "S2_12_carrier"
   },
@@ -183,31 +184,31 @@
    "start": 1721,
    "end": 1774,
    "tag": "MARKING",
-   "text": "A laser marker applies the spool ID and the WPS number — traceability down to every weld",
+   "text": "Laser marks the spool ID",
    "key": "mark",
    "shot": "S2_14_mark"
   },
   {
    "start": 1782,
    "end": 1869,
-   "tag": "INSPECTION",
-   "text": "A laser profilometer scans the weld and checks the bead geometry against tolerances; the result is stored under the spool ID",
+   "tag": "WELD INSPECTION",
+   "text": "A laser scanner checks the bead against limits",
    "key": "scan",
    "shot": "S2_15_scan"
   },
   {
    "start": 1877,
-   "end": 2048,
+   "end": 2038,
    "tag": "STORAGE",
-   "text": "The loading robot places the finished spool in the storage rack; the flange of the next kit is already on the fit-up station",
+   "text": "The finished spool goes to the rack; the next kit is already on the fixture",
    "key": "store",
    "shot": "S2_16_store"
   }
  ],
  "end_card": {
-  "start": 2053,
+  "start": 2043,
   "end": 2152,
-  "heading": "Full cycle of the spool welding line",
+  "heading": "The full cycle in one flow",
   "flow": [
    "Kit cassette",
    "Fit-up",
@@ -217,47 +218,52 @@
    "Marking and QC",
    "Rack · AGV"
   ],
-  "kpis": [
-   "3 robots: track-mounted loading robot (150 kg class, 3.2 m reach), tack welding robot, track-mounted welding robot + 2-axis positioner",
-   "Clamping gripper with V-blocks for DN100–300, interchangeable jaws",
-   "Logistics runs in parallel with welding: the welding time sets the cycle time of the line",
-   "Every spool is traceable by its ID: weld parameters, QC result, storage location"
-  ],
-  "lines": [
-   "3 robots: track-mounted loading robot (150 kg class, 3.2 m reach), tack welding robot, track-mounted welding robot + 2-axis positioner",
-   "Clamping gripper with V-blocks for DN100–300, interchangeable jaws",
-   "Logistics runs in parallel with welding: the welding time sets the cycle time of the line",
-   "Every spool is traceable by its ID: weld parameters, QC result, storage location"
-  ],
-  "cta": "Stage 2 · Logistics and kitting · layout to be tailored to customer data"
+  "facts": [
+   [
+    "3 robots",
+    "loading, tacking, welding"
+   ],
+   [
+    "DN100–300",
+    "one gripper, interchangeable jaws"
+   ],
+   [
+    "Spool ID",
+    "weld data, inspection, storage slot"
+   ]
+  ]
  },
  "logos": {
   "title": {
-   "x": 80,
+   "x": 72,
    "y": 64,
-   "height": 150,
+   "height": 180,
+   "opacity": 0.88,
    "start": 1,
    "end": 94,
    "fade": 12
   },
   "corner": {
    "x": 80,
-   "y": 40,
-   "height": 64,
-   "opacity": 1.0,
+   "y": 36,
+   "height": 77,
+   "opacity": 0.88,
    "start": 95,
-   "end": 2052,
+   "end": 2042,
    "fade": 12
   },
   "end_card": {
-   "height": 120,
-   "start": 2053,
+   "x": 76,
+   "y": 60,
+   "height": 144,
+   "opacity": 0.92,
+   "start": 2043,
    "end": 2152,
    "fade": 14
   }
  },
  "corner_label": "DEMO · SIMULATION · SPED UP",
- "footer": "Demonstration 3D simulation · modelled on photos of the shop floor",
+ "footer": "3D simulation based on shop-floor photos",
  "corner_ranges": [
   [
    1,

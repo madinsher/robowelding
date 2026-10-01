@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Compose the stage-2 video of an edition from its EDL: stage-2 shots (rendered PNG frames) + (ru) segments of the
-finished stage-1 video (cut frame-accurately, not re-rendered), overlays, logos, synthesized soundtrack.
+"""Compose the stage-2 video of an edition from its EDL: stage-2 shots (rendered PNG frames) + ("video" mode only)
+segments of the finished stage-1 video (cut frame-accurately, not re-rendered), overlays, logos, synthesized soundtrack.
 
     python3 stage2_logistics/post/compose2.py --edition ru|en --final             the deliverables of the edition:
             frames out/frames_<ed> -> deliverables/demo_full_cycle_<ed>_<brand>_1080p.mp4 + _compact.mp4 (+ --verify
@@ -14,8 +14,9 @@ finished stage-1 video (cut frame-accurately, not re-rendered), overlays, logos,
 
 --edition (default ru, editions.py) gives the defaults of --frames (frames_dir, --preview: preview_dir), --edl,
 --storyboard, --out (video, --preview: preview_video); explicit flags win.  A storyboard made for another edition or
-another EDL is refused.  ru ("video" mode) splices the stage-1 video; en ("render" mode) has only stage-2 segments (the
-stage-1 shots are rendered from the stage-2 scene), so it needs no stage-1 mp4 and has no splices to verify.
+another EDL is refused.  Both editions are in "render" mode: only stage-2 segments (the stage-1 shots are rendered
+from the stage-2 scene), so no stage-1 mp4 is needed and there are no splices to verify.  The "video" mode (editions.py
+stage1="video") splices the stage-1 video instead.
 
 Pipeline (one ffmpeg run, no intermediate encodes):
   * edl_<ed>.json segments in output order.  Consecutive stage-2 segments form a block; each block is one ffconcat list
@@ -504,7 +505,7 @@ def main(argv=None) -> None:
     ap.add_argument("--out", default=None, help="output mp4 (default: the edition's video; --preview: preview_video)")
     ap.add_argument("--edl", default=None, help="EDL (default: the edition's post/edl_<ed>.json)")
     ap.add_argument("--storyboard", default=None, help="storyboard (default: the edition's post/storyboard2_<ed>.json)")
-    ap.add_argument("--stage1", default=None, help="stage-1 mp4 (default: the EDL's stage1_video; ru only)")
+    ap.add_argument("--stage1", default=None, help="stage-1 mp4 (default: the EDL's stage1_video; video mode only)")
     ap.add_argument("--preview", action="store_true", help="fast x264 preset; sparse / low-res frames expected")
     ap.add_argument("--no-audio", action="store_true", help="no soundtrack")
     ap.add_argument("--no-overlays", action="store_true", help="no title, captions, logos, corner label, end card")

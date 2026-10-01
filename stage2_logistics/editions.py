@@ -1,10 +1,12 @@
 """Editions of the stage-2 video: one table, every script (build2.py, edl.py, post/*) takes ``--edition``.
 
-    ru   Russian, ПИГРУПП logo.   The welding part is spliced from the finished stage-1 video
-         (demo_video/deliverables/demo_welding_cell_1080p.mp4, frames 97-456 and 541-930): it is NOT re-rendered.
-    en   English, ATOMIX logo.     The stage-1 video has Russian titles burned in, so its welding part is rendered
-         again from the stage-2 scene with the stage-1 cameras (cameras2.S1_SHOTS; the stage-1 choreography is
-         embedded there at WELD_OFFSET, so the shots are the same) and gets English captions in the montage.
+    ru   Russian, ПИГРУПП logo.
+    en   English, ATOMIX logo.
+    Both render the welding part from the stage-2 scene with the stage-1 cameras (cameras2.S1_SHOTS; the stage-1
+    choreography is embedded there at WELD_OFFSET, so the shots are the same): the finished stage-1 video
+    (demo_video/deliverables/demo_welding_cell_1080p.mp4) has its own titles burned in, in the stage-1 look.  The
+    captions of the welding part are drawn in the montage in the edition's language.  stage1="video" would splice
+    frames 97-456 and 541-930 of that video instead of rendering them.
 
 Fields:
     lang         in-scene texts (i18n2) and overlay texts (post/storyboard2)
@@ -23,8 +25,8 @@ POST = os.path.join(HERE, "post")
 DELIV = os.path.join(HERE, "deliverables")
 
 EDITIONS = {
-    "ru": dict(name="ru", lang="ru", brand="pigrupp", stage1="video",
-               label="Russian, PIGRUPP logo, welding part spliced from the stage-1 video"),
+    "ru": dict(name="ru", lang="ru", brand="pigrupp", stage1="render",
+               label="Russian, PIGRUPP logo, welding shots rendered from the stage-2 scene"),
     "en": dict(name="en", lang="en", brand="atomix", stage1="render",
                label="English version, ATOMIX logo, welding shots rendered from the stage-2 scene"),
 }

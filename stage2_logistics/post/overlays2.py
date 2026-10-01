@@ -1,18 +1,24 @@
-"""Stage-2 overlays: the stage-1 title / captions / corner label (demo_video/post/overlays.py, reused unchanged),
-the new stage-2 end card with a horizontal flow diagram of the 7 steps, and the logos of the edition's brand.
+"""Stage-2 overlays: title, captions, corner label, end card and the logos of the edition's brand.
 
     ovs = render_all2(sb, out_dir)    # list of overlays.Overlay (Overlay2) in compositing order
+
+Look ("open type", STYLE2): no caption boxes.  Type is set directly on the footage in a light humanist face (Fira
+Sans, shipped in assets/fonts, SIL OFL) over a soft scrim anchored in the lower-left corner; the scrim darkens the
+picture towards a deep tone of the brand colour (``sb["brand"]["color"]``), so each edition takes its tint from its
+logo.  Rubrics are tracked capitals after a short rule in the brand colour.  The end card is a summary frame: logo,
+heading, the 7 steps as a thin timeline, three key facts.
 
 Every Overlay carries OUTPUT frame numbers (start/end inclusive, like stage 1).  ``Overlay2`` adds per-edge fades and
 ``whole``:
   * corner label: one overlay per stage-2 range (``sb["corner_ranges"]``) that fades in/out (12 frames) only at the
-    very start/end of the video and cuts hard at the splices, where the stage-1 video segments continue with the same
-    label burned in at the same place and opacity (render mode: one range over the whole video);
-  * logos of ``sb["brand"]`` (branding2: the customer's logo on a white rounded plate, ``sb["logos"]`` placement and
-    timing): title logo (large, top left, title timing and fades), corner logo (small, top left - the corner label
-    is top right - ``whole=True``: compose2 draws it over the concatenated video, stage-1 video segments included),
-    end-card logo (centred above the heading, part of the end-card image).
+    very start/end of the video and cuts hard at the splices to the stage-1 video segments (render mode: one range
+    over the whole video);
+  * logos of ``sb["brand"]`` (branding2: the customer's logo on a white rounded plate, ``sb["logos"]`` placement,
+    opacity and timing): title logo (large, top left, title timing and fades), corner logo (small, top left - the
+    corner label is top right - ``whole=True``: compose2 draws it over the concatenated video, stage-1 video segments
+    included), end-card logo (top left, part of the end-card image).
 Every text drawn comes from the storyboard (no language defaults here): the English edition draws no Cyrillic.
+The stage-1 module (demo_video/post/overlays.py) supplies only the Overlay class and the font / wrap helpers.
 """
 import copy
 import os
@@ -21,7 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
-from PIL import Image, ImageDraw
+import numpy as np
+from PIL import Image, ImageDraw, ImageFilter
 
 HERE = Path(__file__).resolve().parent
 S2_ROOT = HERE.parent
@@ -67,7 +74,8 @@ _FALLBACK = {False: ["DejaVuSans.ttf", "arial.ttf", "Arial.ttf", "segoeui.ttf"],
 
 def resolve_font(path: str, bold: bool) -> str:
     """``path`` if it exists, else the same file name / a Cyrillic-capable fallback (DejaVu, Arial, Segoe UI) from
-    the usual font folders or matplotlib's bundled DejaVu fonts.  The storyboard keeps the stage-1 Linux paths."""
+    the usual font folders or matplotlib's bundled DejaVu fonts.  The storyboard keeps bare file names of the fonts
+    shipped in assets/fonts."""
     names = ([os.path.basename(path)] if path else []) + _FALLBACK[bold]
     shipped = os.path.join(_FONT_DIRS[0], names[0])
     if os.path.isfile(shipped):          # the repository's copy first: identical glyphs on every OS
@@ -89,29 +97,96 @@ def resolve_font(path: str, bold: bool) -> str:
 
 
 def with_fonts(sb: dict) -> dict:
-    """Copy of the storyboard with font paths valid on this machine."""
+    """Copy of the storyboard with font paths valid on this machine (font = regular, font_bold = the medium weight
+    of the rubrics, font_light = the light weight of headings and captions; a storyboard without font_light: font)."""
     sb = copy.deepcopy(sb)
     sb["font"] = resolve_font(sb.get("font", ""), False)
     sb["font_bold"] = resolve_font(sb.get("font_bold", ""), True)
+    sb["font_light"] = resolve_font(sb.get("font_light") or sb["font"], False)
     return sb
 
 
-# ----------------------------------------------------------------------------- end card
-def wrap_bullet(text: str, font, max_w: float) -> List[str]:
-    """Like overlays.wrap_text, but a two-line bullet prefers to break after a clause (':' ',' ';') when both halves
-    fit - "Каждый спул прослеживается по ID: / режимы швов, ..." instead of a mid-phrase split."""
-    if font.getlength(text) <= max_w:
-        return [text]
-    words = text.split(" ")
-    best = None
-    for k in range(1, len(words)):
-        a, b = " ".join(words[:k]), " ".join(words[k:])
-        if a[-1] not in ":,;" or max(font.getlength(a), font.getlength(b)) > max_w:
-            continue
-        score = abs(font.getlength(a) - font.getlength(b))
-        if best is None or score < best[0]:
-            best = (score, [a, b])
-    return best[1] if best else overlays.wrap_text(text, font, max_w)
+# ----------------------------------------------------------------------------- style
+STYLE2 = {
+    "text": (255, 255, 255, 255),
+    "text_dim": (255, 255, 255, 200),       # sub-lines, fact labels
+    "text_faint": (255, 255, 255, 130),     # footer
+    "rubric": (255, 255, 255, 225),         # tracked capitals of the caption rubric
+    "margin_x": 96,                         # left safe margin of the type
+    "margin_y": 92,                         # baseline of the last line above the bottom edge
+    "accent_lift": 0.12,                    # accent = brand colour mixed 12 % towards white (reads on dark footage)
+    "scrim_tint": 0.80,                     # scrim colour = brand colour mixed 80 % towards black
+    "scrim_strength": 0.90,                 # scrim alpha in the corner
+    "halo": 120,                            # alpha of the soft dark halo under type set on the footage
+    "veil": 0.78,                           # end card: alpha of the full-frame veil ...
+    "veil_tint": 0.90,                      # ... brand colour mixed 90 % towards black
+    "label_opacity": 0.67,                  # corner label
+}
+FALLBACK_BRAND = (255, 106, 19)             # a storyboard without a brand: the stage-1 orange
+
+
+def _mix(c, other, t):
+    return tuple(int(round(c[i] * (1 - t) + other[i] * t)) for i in range(3))
+
+
+def style2(sb: dict) -> dict:
+    """STYLE2 + ``sb["style2"]`` overrides + the colours derived from the brand: accent, scrim, veil_color."""
+    st = dict(STYLE2)
+    for k, v in (sb.get("style2") or {}).items():
+        st[k] = tuple(v) if isinstance(v, list) else v
+    b = sb.get("brand") or {}
+    color = tuple(b.get("color") or FALLBACK_BRAND) if isinstance(b, dict) else FALLBACK_BRAND
+    st["brand"] = color
+    st["accent"] = _mix(color, (255, 255, 255), st["accent_lift"]) + (255,)
+    st["scrim"] = _mix(color, (0, 0, 0), st["scrim_tint"])
+    st["veil_color"] = _mix(color, (0, 0, 0), st["veil_tint"])
+    return st
+
+
+def _f(sb: dict, weight: str, size: int):
+    """Font of the storyboard: 'light' (headings, captions), 'regular', 'medium' (rubrics, numbers)."""
+    key = {"light": "font_light", "regular": "font", "medium": "font_bold"}[weight]
+    return overlays._font(sb.get(key) or sb["font"], size)
+
+
+def tracked_width(text: str, font, spacing: float) -> float:
+    return overlays._text_width(font, text, spacing)
+
+
+def draw_tracked(d: ImageDraw.ImageDraw, xy, text: str, font, fill, spacing: float) -> float:
+    """Text with letter spacing, baseline-left anchored; returns the x after the last glyph."""
+    overlays._draw_spaced(d, xy, text, font, fill, spacing)
+    return xy[0] + tracked_width(text, font, spacing)
+
+
+def _greedy(text: str, font, max_w: float) -> List[str]:
+    lines, cur = [], ""
+    for w in text.split():
+        t = (cur + " " + w).strip()
+        if font.getlength(t) <= max_w or not cur:
+            cur = t
+        else:
+            lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def wrap_even(text: str, font, max_w: float) -> List[str]:
+    """Greedy wrap, then the narrowest width that keeps the same number of lines: lines of even length instead of
+    a long line with a short tail."""
+    n = len(_greedy(text, font, max_w))
+    if n <= 1:
+        return _greedy(text, font, max_w)
+    lo, hi = max(font.getlength(w) for w in text.split()), max_w
+    for _ in range(20):
+        mid = (lo + hi) / 2
+        if len(_greedy(text, font, mid)) <= n:
+            hi = mid
+        else:
+            lo = mid
+    return _greedy(text, font, hi)
 
 
 def _label_lines(text: str, font, max_w: float) -> Optional[List[str]]:
@@ -131,63 +206,102 @@ def _label_lines(text: str, font, max_w: float) -> Optional[List[str]]:
     return best[1] if best else None
 
 
-def _flow_layout(sb: dict, steps: Sequence[str], st: dict):
-    """Pick box size + label font so all step labels fit in <= 2 lines.  Returns a dict of geometry."""
+def corner_scrim(size: Tuple[int, int], color, strength: float, power: float = 0.7) -> Image.Image:
+    """RGBA image of ``size``: ``color`` with an alpha that is ``strength`` in the lower-left corner and falls to 0
+    on the ellipse through the right and the top edge (the darkening sits under the type and leaves the action free)."""
+    w, h = size
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    r = np.sqrt((xs / w) ** 2 + ((h - 1 - ys) / h) ** 2)
+    a = strength * np.clip(1.0 - r, 0.0, 1.0) ** power
+    arr = np.empty((h, w, 4), np.uint8)
+    arr[..., :3] = np.array(color, np.uint8)
+    arr[..., 3] = (a * 255.0 + 0.5).astype(np.uint8)
+    return Image.fromarray(arr, "RGBA")
+
+
+def with_halo(base: Image.Image, type_layer: Image.Image, alpha: int, radius: float = 8.0) -> Image.Image:
+    """``type_layer`` (text on transparent) composited over ``base`` with a soft dark halo under the glyphs: the type
+    keeps its contrast where the scrim is already thin."""
+    if alpha > 0:
+        a = type_layer.getchannel("A").filter(ImageFilter.GaussianBlur(radius)).point(lambda v: min(255, v * 2))
+        halo = Image.new("RGBA", type_layer.size, (0, 0, 0, 0))
+        halo.putalpha(a.point(lambda v: int(v * alpha / 255)))
+        base = Image.alpha_composite(base, halo)
+    return Image.alpha_composite(base, type_layer)
+
+
+# ----------------------------------------------------------------------------- title, captions, corner label
+def render_title2(sb: dict, out_dir: Path) -> Overlay2:
+    """Opening title: brand-tinted scrim from the lower-left corner, light heading, tracked sub-line, accent rule."""
+    st = style2(sb)
+    t = sb["title"]
+    img = corner_scrim((W, H), st["scrim"], st["scrim_strength"] + 0.02, power=0.8)
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    f_head, f_sub = _f(sb, "light", 88), _f(sb, "regular", 28)
     mx = st["margin_x"]
-    n = len(steps)
-    gap = 50                                          # arrow gap between boxes
-    box_w = int((W - 2 * mx - (n - 1) * gap) / n)
-    pad = 10
-    for size in (26, 25, 24, 23, 22, 21, 20):
-        f_lab = overlays._font(sb["font"], size)
-        lines = [_label_lines(s, f_lab, box_w - 2 * pad) for s in steps]
-        if all(lines):
-            break
-    else:
-        raise ValueError("flow step labels do not fit the end-card boxes; shorten them")
-    x0 = int((W - (n * box_w + (n - 1) * gap)) / 2)
-    return {"gap": gap, "box_w": box_w, "box_h": 132, "font": f_lab, "line_h": int(size * 1.3), "lines": lines,
-            "x0": x0}
+    y = H - st["margin_y"]
+    sub = (t.get("sub") or "").strip()
+    if sub:
+        draw_tracked(d, (mx + 2, y), sub, f_sub, st["text_dim"], 1.2)
+        y -= 64
+    for line in reversed(wrap_even(t["heading"], f_head, W - 2 * mx - 160)):
+        d.text((mx - 4, y), line, font=f_head, fill=st["text"], anchor="ls")
+        y -= 102
+    d.rectangle([mx, y - 6, mx + 88, y - 1], fill=st["accent"])
+    path = Path(out_dir) / "ov_title.png"
+    with_halo(img, layer, st["halo"]).save(path)
+    return Overlay2("title", str(path), 0, 0, t["start"], t["end"], fade=12)
 
 
-def _draw_flow(img: Image.Image, sb: dict, st: dict, geo: dict, y: int) -> None:
-    """Rounded step boxes (dark caption-panel fill, thin light outline) with an orange numbered badge and a one- or
-    two-line label; orange arrows between the boxes."""
-    d = ImageDraw.Draw(img)
-    f_num = overlays._font(sb["font_bold"], 22)
-    bw, bh, gap = geo["box_w"], geo["box_h"], geo["gap"]
-    badge_r = 17
-    badge_cy = y + 18 + badge_r
-    for i, lines in enumerate(geo["lines"]):
-        bx = geo["x0"] + i * (bw + gap)
-        # box drawn on its own layer so the translucent fill composites over the veil (not replaces it)
-        layer = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
-        ImageDraw.Draw(layer).rounded_rectangle([0, 0, bw - 1, bh - 1], radius=14, fill=st["panel"],
-                                                outline=(255, 255, 255, 70), width=2)
-        img.alpha_composite(layer, (bx, y))
-        cx = bx + bw / 2
-        d.ellipse([cx - badge_r, badge_cy - badge_r, cx + badge_r, badge_cy + badge_r], fill=st["accent"])
-        d.text((cx, badge_cy + 1), str(i + 1), font=f_num, fill=st["chip_text"], anchor="mm")
-        # label block centred in the area below the badge
-        area_top = badge_cy + badge_r + 8
-        area_h = y + bh - 10 - area_top
-        lh = geo["line_h"]
-        ty = area_top + (area_h - lh * len(lines)) / 2 + lh / 2
-        for line in lines:
-            d.text((cx, ty), line, font=geo["font"], fill=st["text"], anchor="mm")
-            ty += lh
-        # arrow to the next box: shaft + triangular head, vertically centred on the box
-        if i < len(geo["lines"]) - 1:
-            ax0 = bx + bw + 9
-            ax1 = bx + bw + gap - 9
-            ay = y + bh / 2
-            head = 13
-            d.rectangle([ax0, ay - 2, ax1 - head + 1, ay + 2], fill=st["accent"])
-            d.polygon([(ax1 - head, ay - 9), (ax1, ay), (ax1 - head, ay + 9)], fill=st["accent"])
+CAPTION_BOX = (1900, 620)          # scrim area of a caption, anchored in the lower-left corner of the frame
+CAPTION_WRAP = 1120                # max text width (px): the right half of the frame stays free for the action
 
 
-END_TOP_MIN = 36                   # the end-card content (logo plate) never starts closer to the top edge
-SPACING_STEPS = (1.0, 0.9, 0.8, 0.7, 0.6)        # gap scales tried when the content does not fit above the footer
+def render_caption2(sb: dict, cap: dict, idx: int, out_dir: Path) -> Overlay2:
+    """Caption: rubric (accent rule + tracked capitals) and one or two lines of light type on the corner scrim."""
+    st = style2(sb)
+    cw, ch = CAPTION_BOX
+    img = corner_scrim((cw, ch), st["scrim"], st["scrim_strength"])
+    layer = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    f_tag, f_txt = _f(sb, "medium", 23), _f(sb, "light", 48)
+    mx, lh = st["margin_x"], 60
+    lines = wrap_even(cap["text"], f_txt, CAPTION_WRAP)
+    y0 = ch - st["margin_y"] - lh * (len(lines) - 1)
+    for i, line in enumerate(lines):
+        d.text((mx, y0 + i * lh), line, font=f_txt, fill=st["text"], anchor="ls")
+    tag = cap.get("tag", "").upper()
+    if tag:
+        ty = y0 - 72
+        d.rectangle([mx, ty - 11, mx + 56, ty - 7], fill=st["accent"])
+        draw_tracked(d, (mx + 76, ty), tag, f_tag, st["rubric"], 4.5)
+    path = Path(out_dir) / f"ov_cap{idx:02d}.png"
+    with_halo(img, layer, st["halo"]).save(path)
+    return Overlay2(f"caption{idx:02d}", str(path), 0, H - ch, cap["start"], cap["end"], fade=12)
+
+
+def render_corner_label2(sb: dict, out_dir: Path) -> Overlay2:
+    """Top-right label ("DEMO · SIMULATION · SPED UP"): small tracked capitals, no box."""
+    st = style2(sb)
+    text = sb["corner_label"]
+    f = _f(sb, "medium", 17)
+    spacing, pad = 3.2, 14
+    tw = int(tracked_width(text, f, spacing))
+    layer = Image.new("RGBA", (tw + 2 * pad, 22 + 2 * pad), (0, 0, 0, 0))
+    draw_tracked(ImageDraw.Draw(layer), (pad, pad + 17), text, f, st["text"], spacing)
+    img = with_halo(Image.new("RGBA", layer.size, (0, 0, 0, 0)), layer, st["halo"], radius=5)
+    path = Path(out_dir) / "ov_corner.png"
+    img.save(path)
+    return Overlay2("corner", str(path), W - 80 - tw - pad, 61 - pad, 1, sb["frames"], fade=12,
+                    opacity=st["label_opacity"])
+
+
+# ----------------------------------------------------------------------------- end card
+END_HEAD_Y = 352                   # heading baseline
+END_FLOW_Y = 492                   # timeline
+END_FACTS_Y = 806                  # baseline of the fact values
+END_FOOT_Y = 1036                  # footer baseline
 
 
 def brand_key(sb: dict) -> Optional[str]:
@@ -204,104 +318,95 @@ def logo_size(sb: dict, height: float) -> Tuple[int, int]:
     return int(round(height * branding2.logo_aspect(brand_key(sb), plate=True))), int(round(height))
 
 
+def _logo_plate(sb: dict, L: dict) -> Image.Image:
+    """The brand's logo plate of ``L["height"]`` at ``L["opacity"]`` (default 1)."""
+    plate = branding2.logo_plate(brand_key(sb), height=L["height"])
+    op = float(L.get("opacity", 1.0))
+    if op < 1.0:
+        plate.putalpha(plate.getchannel("A").point(lambda v: int(v * op)))
+    return plate
+
+
 def end_card_layout(sb: dict, st: dict = None) -> dict:
-    """Vertical layout of the end card: logo plate (``sb["logos"]["end_card"]["height"]``, if the storyboard has a
-    brand), heading + accent rule, flow diagram, KPI bullets, cta chip - centred with the stage-1 upward bias (-30 px)
-    and ending at least 40 px above the footer.  If the content does not fit, the gaps shrink (SPACING_STEPS), then
-    the logo (down to 80 % of its height); still too tall -> ValueError (shorten the KPI lines)."""
-    st = st or overlays._style(sb)
+    """Geometry of the end card (checked here, drawn by render_end_card2): logo box, the timeline nodes with their
+    wrapped labels, the fact columns.  Raises ValueError when a text does not fit its column (shorten it)."""
+    st = st or style2(sb)
     e = sb["end_card"]
-    f_line = overlays._font(sb["font"], 36)
-    f_cta = overlays._font(sb["font_bold"], 24)
-    cta = (e.get("cta") or "").strip()
-    cta_h = (overlays._ascent(f_cta) + 2 * 12 + 4) if cta else 0
-    kpis = e.get("kpis") or e.get("lines") or []
-    flow = e.get("flow") or []
-    geo = _flow_layout(sb, flow, st) if flow else None
-    lines: List[List[str]] = [wrap_bullet(l, f_line, 1600) for l in kpis]
-    n_lines = sum(len(l) for l in lines)
+    mx = st["margin_x"]
     L = (sb.get("logos") or {}).get("end_card") if brand_key(sb) else None
-    h0 = int(L["height"]) if L else 0
-    limit = H - st["margin_y"] - 40                   # content ends above the footer (baseline H - margin_y)
-    for lh in ([h0 - k * 10 for k in range(0, 3) if h0 - k * 10 >= 0.8 * h0] if h0 else [0]):
-        for s in SPACING_STEPS:
-            g = {"logo": round(34 * s) if lh else 0, "rule": round(40 * s), "flow": round(54 * s),
-                 "cta": round(34 * s)}
-            total = (lh + g["logo"] + 64 + 16 + g["rule"]
-                     + ((geo["box_h"] + g["flow"]) if geo else 0)
-                     + 56 * n_lines + 14 * len(lines)
-                     + ((g["cta"] + cta_h) if cta else 0))
-            y0 = max(END_TOP_MIN, (H - total) // 2 - 30)
-            if y0 + total <= limit:
-                lw = logo_size(sb, lh)[0] if lh else 0
-                return {"y0": y0, "total": total, "end": y0 + total, "limit": limit, "gaps": g, "spacing": s,
-                        "logo_h": lh, "logo_box": ((W - lw) // 2, y0, (W - lw) // 2 + lw, y0 + lh) if lh else None,
-                        "geo": geo, "lines": lines, "cta": cta, "cta_h": cta_h}
-    raise ValueError(f"end card content ({n_lines} bullet lines, logo {h0} px) does not fit above the footer "
-                     f"(y <= {limit}) even with the gaps at {SPACING_STEPS[-1]:.0%}; shorten the KPI lines")
+    logo_box = None
+    if L:
+        lw, lh = logo_size(sb, L["height"])
+        x0, y0 = int(L.get("x", mx - 20)), int(L.get("y", 60))
+        logo_box = (x0, y0, x0 + lw, y0 + lh)
+        if y0 + lh > END_HEAD_Y - 110:
+            raise ValueError(f"end-card logo ({lh} px at y {y0}) runs into the heading; lower logos.end_card.height")
+    f_head = _f(sb, "light", 78)
+    if f_head.getlength(e["heading"]) > W - 2 * mx:
+        raise ValueError(f"end-card heading {e['heading']!r} is wider than the frame; shorten it")
+    flow = list(e.get("flow") or [])
+    f_lab = _f(sb, "regular", 28)
+    nodes = []
+    if flow:
+        step = (W - 2 * mx - 190) / max(1, len(flow) - 1)
+        for i, s in enumerate(flow):
+            lines = _label_lines(s, f_lab, step - 26)
+            if not lines:
+                raise ValueError(f"end-card flow label {s!r} does not fit {step - 26:.0f} px in two lines; shorten it")
+            nodes.append((mx + 10 + i * step, lines))
+    facts = [tuple(f) for f in (e.get("facts") or [])]
+    f_val, f_fl = _f(sb, "light", 66), _f(sb, "regular", 27)
+    cols = []
+    if facts:
+        cw = (W - 2 * mx) / len(facts)
+        for i, (value, label) in enumerate(facts):
+            if f_val.getlength(value) > cw - 40:
+                raise ValueError(f"end-card fact {value!r} is wider than its column; shorten it")
+            lines = wrap_even(label, f_fl, cw - 60)
+            if len(lines) > 2:
+                raise ValueError(f"end-card fact label {label!r} needs {len(lines)} lines; shorten it")
+            cols.append((mx + i * cw, value, lines))
+    end = END_FACTS_Y + 46 + 36 * max([len(c[2]) for c in cols] or [0])
+    limit = END_FOOT_Y - 60
+    if end > limit:
+        raise ValueError(f"end-card facts end at y={end}, the footer needs y <= {limit}")
+    return {"logo_box": logo_box, "logo_h": (logo_box[3] - logo_box[1]) if logo_box else 0, "nodes": nodes,
+            "cols": cols, "y0": logo_box[1] if logo_box else END_HEAD_Y - 80, "end": end, "limit": limit,
+            "spacing": 1.0}
 
 
 def render_end_card2(sb: dict, out_dir: Path) -> Overlay2:
-    """Stage-2 end card: the stage-1 veil and typography (heading 64 bold, accent rule, 36 px bullets with orange
-    squares, orange cta chip, dim footer) with the brand logo plate centred above the heading and the 7-step flow
-    diagram between the heading and the KPI bullets (layout: end_card_layout)."""
-    st = overlays._style(sb)
+    """Summary frame: a brand-tinted veil over the last shot, the logo, a light heading under an accent rule, the
+    steps as a thin timeline with numbered nodes, the key facts as large light values with a short label each."""
+    st = style2(sb)
     e = sb["end_card"]
     lay = end_card_layout(sb, st)
-    img = Image.new("RGBA", (W, H), (0, 0, 0, st["endcard_dim"]))
-    d = ImageDraw.Draw(img)
-    f_head = overlays._font(sb["font_bold"], 64)
-    f_line = overlays._font(sb["font"], 36)
-    f_cta = overlays._font(sb["font_bold"], 24)
-    f_foot = overlays._font(sb["font"], 24)
-    cta, cta_h, cta_spacing = lay["cta"], lay["cta_h"], 1.5
-    g, geo, lines = lay["gaps"], lay["geo"], lay["lines"]
-    y = lay["y0"]
-
+    mx = st["margin_x"]
+    img = Image.new("RGBA", (W, H), st["veil_color"] + (int(255 * st["veil"]),))
     if lay["logo_box"]:
-        # the plate is opaque over the veil (its rounded corners stay transparent)
-        plate = branding2.logo_plate(brand_key(sb), height=lay["logo_h"])
-        img.alpha_composite(plate, lay["logo_box"][:2])
-        y += lay["logo_h"] + g["logo"]
+        img.alpha_composite(_logo_plate(sb, sb["logos"]["end_card"]), lay["logo_box"][:2])
+    d = ImageDraw.Draw(img)
+    d.rectangle([mx, END_HEAD_Y - 92, mx + 88, END_HEAD_Y - 87], fill=st["accent"])
+    d.text((mx - 4, END_HEAD_Y), e["heading"], font=_f(sb, "light", 78), fill=st["text"], anchor="ls")
 
-    d.text((W / 2, y + overlays._ascent(f_head)), e["heading"], font=f_head, fill=st["text"], anchor="ms")
-    y += 64 + 16
-    d.rectangle([W / 2 - 70, y, W / 2 + 70, y + 5], fill=st["accent"])
-    y += g["rule"]
+    if lay["nodes"]:
+        f_num, f_lab = _f(sb, "medium", 21), _f(sb, "regular", 28)
+        yl = END_FLOW_Y
+        d.line([lay["nodes"][0][0], yl, W - mx, yl], fill=(255, 255, 255, 80), width=2)
+        for i, (x, lines) in enumerate(lay["nodes"]):
+            d.ellipse([x - 10, yl - 10, x + 10, yl + 10], fill=st["accent"])
+            draw_tracked(d, (x - 10, yl - 28), f"{i + 1:02d}", f_num, st["text_faint"], 2.0)
+            for j, line in enumerate(lines):
+                d.text((x - 10, yl + 54 + j * 36), line, font=f_lab, fill=st["text"], anchor="ls")
 
-    if geo:
-        _draw_flow(img, sb, st, geo, y)
-        y += geo["box_h"] + g["flow"]
-        d = ImageDraw.Draw(img)
+    f_val, f_fl = _f(sb, "light", 66), _f(sb, "regular", 27)
+    for x, value, lines in lay["cols"]:
+        d.rectangle([x, END_FACTS_Y - 86, x + 40, END_FACTS_Y - 82], fill=st["accent"])
+        d.text((x - 3, END_FACTS_Y), value, font=f_val, fill=st["text"], anchor="ls")
+        for j, line in enumerate(lines):
+            d.text((x, END_FACTS_Y + 46 + j * 36), line, font=f_fl, fill=st["text_dim"], anchor="ls")
 
-    if lines:
-        max_w = max(f_line.getlength(l[0]) for l in lines)
-        x0 = int((W - max_w) / 2)
-        for wrapped in lines:
-            for k, line in enumerate(wrapped):
-                if k == 0:
-                    d.rectangle([x0 - 34, y + 20, x0 - 22, y + 32], fill=st["accent"])
-                d.text((x0, y + overlays._ascent(f_line)), line, font=f_line, fill=st["text"], anchor="ls")
-                y += 56
-            y += 14
-
-    if cta:
-        # call-to-action: centred orange chip (stage-1 spacing), separated from the bullets by a gap
-        y += g["cta"]
-        pad_x, pad_y = 22, 12
-        tw = int(overlays._text_width(f_cta, cta, cta_spacing))
-        cw = tw + 2 * pad_x
-        cx0 = (W - cw) // 2
-        d.rounded_rectangle([cx0, y, cx0 + cw, y + cta_h], radius=10, fill=st["accent"])
-        overlays._draw_spaced(d, (cx0 + pad_x, y + pad_y + overlays._ascent(f_cta)), cta, f_cta, st["chip_text"],
-                              cta_spacing)
-        y += cta_h
-
-    d.text((W / 2, H - st["margin_y"]), sb["footer"], font=f_foot, fill=st["text_dim"], anchor="ms")
-    if y != lay["end"] or y > lay["limit"]:
-        raise ValueError(f"end card content reaches y={y} (layout {lay['end']}, limit {lay['limit']}): it overlaps "
-                         f"the footer; shorten the KPI lines")
-
+    d.text((mx, END_FOOT_Y), sb["footer"], font=_f(sb, "regular", 21), fill=st["text_faint"], anchor="ls")
     path = Path(out_dir) / "ov_end2.png"
     img.save(path)
     return Overlay2("end_card", str(path), 0, 0, e["start"], e["end"], fade=14)
@@ -310,7 +415,8 @@ def render_end_card2(sb: dict, out_dir: Path) -> Overlay2:
 # ----------------------------------------------------------------------------- logos
 def logo_overlays(sb: dict, out_dir: Path) -> List[Overlay2]:
     """Title logo (large plate, top left, title timing and fades) and corner logo (small plate, top left, whole
-    video: ``whole=True``, fades only at its start/end) of ``sb["brand"]``; none without a brand."""
+    video: ``whole=True``, fades only at its start/end) of ``sb["brand"]``; none without a brand.  The opacity of a
+    logo (``sb["logos"][name]["opacity"]``) is the overlay's opacity: compose2 applies it to the whole plate."""
     brand = brand_key(sb)
     lg = sb.get("logos") or {}
     out: List[Overlay2] = []
@@ -351,9 +457,9 @@ def logo_boxes(sb: dict) -> dict:
 
 # ----------------------------------------------------------------------------- all overlays
 def corner_overlays(sb: dict, out_dir: Path) -> List[Overlay2]:
-    """One corner-label overlay per stage-2 range: stage-1 look (60 % opacity, top right), 12-frame fades only at
-    the start/end of the whole video, hard cuts at the splices to the stage-1 segments."""
-    base = overlays.render_corner_label(sb, out_dir)
+    """One corner-label overlay per stage-2 range: 12-frame fades only at the start/end of the whole video, hard
+    cuts at the splices to the stage-1 segments."""
+    base = render_corner_label2(sb, out_dir)
     out = []
     ranges = sb.get("corner_ranges") or [[1, sb["frames"]]]
     for k, (a, b) in enumerate(ranges):
@@ -369,8 +475,8 @@ REQUIRED = ("title", "end_card", "footer", "corner_label", "captions")
 
 def render_all2(sb: dict, out_dir) -> List[Overlay]:
     """Render every stage-2 overlay into ``out_dir``; order = compositing order (title, title logo, captions, end card,
-    corner labels, corner logo).  Title and captions come from the stage-1 renderer unchanged.  Every text is taken
-    from the storyboard: a missing key raises instead of falling back to a (Russian) default of the stage-1 module."""
+    corner labels, corner logo).  Every text is taken from the storyboard: a missing key raises instead of falling
+    back to a (Russian) default."""
     missing = [k for k in REQUIRED if k not in sb]
     if missing:
         raise KeyError(f"storyboard lacks {missing} (regenerate it: python3 stage2_logistics/edl.py)")
@@ -378,10 +484,10 @@ def render_all2(sb: dict, out_dir) -> List[Overlay]:
     out_dir.mkdir(parents=True, exist_ok=True)
     sb = with_fonts(sb)
     logos = logo_overlays(sb, out_dir)
-    ovs: List[Overlay] = [overlays.render_title(sb, out_dir)]
+    ovs: List[Overlay] = [render_title2(sb, out_dir)]
     ovs += [o for o in logos if not o.whole]
     for i, cap in enumerate(sb.get("captions", [])):
-        ovs.append(overlays.render_caption(sb, cap, i, out_dir))
+        ovs.append(render_caption2(sb, cap, i, out_dir))
     ovs.append(render_end_card2(sb, out_dir))
     ovs.extend(corner_overlays(sb, out_dir))
     ovs += [o for o in logos if o.whole]
@@ -408,5 +514,6 @@ def preview_frame2(background: Image.Image, ovs: Sequence[Overlay], frame: int) 
     return bg.convert("RGB")
 
 
-__all__ = ["Overlay", "Overlay2", "fades", "render_all2", "render_end_card2", "end_card_layout", "corner_overlays",
-           "logo_overlays", "logo_boxes", "brand_key", "preview_frame2", "resolve_font", "with_fonts"]
+__all__ = ["Overlay", "Overlay2", "fades", "render_all2", "render_title2", "render_caption2", "render_corner_label2",
+           "render_end_card2", "end_card_layout", "corner_overlays", "logo_overlays", "logo_boxes", "brand_key",
+           "preview_frame2", "resolve_font", "with_fonts", "style2", "wrap_even"]

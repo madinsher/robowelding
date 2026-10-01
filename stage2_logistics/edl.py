@@ -89,7 +89,8 @@ def build_edl(plan=None, edition=None):
         o += n
     render = sorted({f for s in segs if s["src"] == "s2" for f in range(s["f0"], s["f1"] + 1)})
     return dict(edition=ed["name"], lang=ed["lang"], brand=ed["brand"], stage1_mode=ed["stage1"],
-                fps=24, frames=o - 1, stage1_video=os.path.relpath(STAGE1_VIDEO, HERE), weld_offset=int(off),
+                fps=24, frames=o - 1, stage1_video=os.path.relpath(STAGE1_VIDEO, HERE).replace(os.sep, "/"),
+                weld_offset=int(off),             # posix path: the json is the same on Windows and Linux
                 n_scene_frames=int(P["n_frames"]), segments=segs, render_frames=render,
                 events={k: int(v) for k, v in ev.items()},
                 intervals={k: [[int(a), int(b)] for a, b in v] for k, v in P["intervals"].items()})

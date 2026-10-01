@@ -19,15 +19,18 @@ timeline of the stage-2 edit (1..edl["frames"]), plus:
     edl_segments         [[src, f0, f1, out0, out1], ...] - compose2.py refuses a storyboard made for another EDL
     captions[i].key/.shot  caption key and the shot it belongs to; stage-1 captions (render mode) also carry
                          "s1": [stage-1 start, end] and a key "s1_*"
-    end_card.flow        the 7 steps of the flow diagram;  end_card.kpis  the bullet lines (== end_card.lines)
+    end_card.flow        the 7 steps of the timeline;  end_card.facts  [[value, label], ...] key facts
+    font, font_bold, font_light   file names of the overlay fonts (assets/fonts: Fira Sans regular / medium / light)
+    logos[*].opacity     the logo plates are slightly transparent
     audio.layers         stage-2 sound layers with their intervals mapped to output frames (see audio2.py)
 
 Editions (EDL "stage1_mode"):
-    video   (ru) the welding part is spliced from the stage-1 video: its title, captions and corner label are burned
-            in, nothing is drawn over it but the corner logo, the corner label cuts hard at the splices.
-    render  (en) the welding part is rendered from the stage-2 scene with the stage-1 cameras: the stage-1 captions
-            that the stage-1 video shows in the used frames are drawn (translated, S1_CAPTIONS_EN) at the same output
-            frames (edl.map_stage1_intervals) with the stage-1 look and fade; one corner label over the whole video.
+    video   (no edition now) the welding part is spliced from the stage-1 video: its title, captions and corner label
+            are burned in, nothing is drawn over it but the corner logo, the corner label cuts hard at the splices.
+    render  (ru, en) the welding part is rendered from the stage-2 scene with the stage-1 cameras: the stage-1 captions
+            that the stage-1 video shows in the used frames are drawn in the edition's language at the same output
+            frames (edl.map_stage1_intervals) with the stage-2 look and short texts (S1_CAPTIONS_RU / _EN); one
+            corner label over the whole video.
     The soundtrack is the same in both editions (plan_audio).
 
 Timing rules (all in output frames):
@@ -39,7 +42,8 @@ Timing rules (all in output frames):
   * logos       title logo = title timing; corner logo title end + 1 .. end card start - 1 (whole video, stage-1
                 video segments included); end-card logo = part of the end card;
   * nothing over s1 video segments but the corner logo.
-All texts live in this file (TEXTS: Russian = the keys, exact; English): edit them here and re-run the script
+  * reading     every caption text <= READ_CPS characters per second it is fully visible (check() refuses more).
+All texts live in this file (TEXTS: Russian, English): edit them here and re-run the script
 (compose2.py reads the json).
 """
 import argparse
@@ -62,173 +66,137 @@ EDL_JSON = Path(editions.get()["edl_json"])        # default edition; editions.g
 SB2_JSON = Path(editions.get()["storyboard_json"])
 S1_STORYBOARD = DEMO / "post" / "storyboard.json"
 
-# ----------------------------------------------------------------------------- texts (Russian, exact)
+# ----------------------------------------------------------------------------- texts (Russian)
+# House style of the Russian texts: "е" instead of "ё", a hyphen instead of dashes (the customer's editing
+# pass over the texts); keep it when a text is changed.
+# A caption is read while the action runs: one short phrase per shot.  check() enforces READ_CPS (characters of the
+# caption text per second it is fully visible), so a text that cannot be read within its shot is refused - shorten it.
 TITLE = {
-    "heading": "Участок сварки трубных спулов: полный цикл",
-    "sub": "Комплектация · сборка и прихватка · загрузка · сварка · маркировка и контроль · складирование",
+    "heading": "Сварка трубных спулов: полный цикл",
+    "sub": "От комплекта деталей до склада",
 }
 
 CAPTIONS: Dict[str, Dict[str, str]] = {       # caption key (edl segment "caption") -> tag, text
-    "flange": {"tag": "КОМПЛЕКТАЦИЯ",
-               "text": "Робот-погрузчик на линейном треке берёт детали из кассеты комплекта: фланец ложится на "
-                       "стенд сборки, пневмоприжимы фиксируют его"},
-    "elbow": {"tag": "СБОРКА",
-              "text": "Отвод ставится на фланец по центрирующим упорам и V-призме — положение задаёт оснастка, "
-                      "а не ручная разметка"},
-    "pipe": {"tag": "СБОРКА · ЗАЗОР",
-             "text": "Труба укладывается в ложемент до упора, датчик проверяет зазор стыка перед прихваткой"},
-    "tack": {"tag": "ПРИХВАТКА",
-             "text": "Малый сварочный робот ставит по три прихватки на каждый стык — сборка фиксируется без "
-                     "ручного труда"},
-    "carry": {"tag": "ПЕРЕНОС",
-              "text": "Прихваченный спул забирается целиком: один комплект деталей — один спул"},
-    "load": {"tag": "ЗАГРУЗКА ЯЧЕЙКИ",
-             "text": "Сварочный робот в исходной позиции, световая завеса в режиме muting: погрузчик ставит спул "
-                     "на планшайбу, прижимы фиксируют фланец"},
-    "ready": {"tag": "ПЕРЕДАЧА В СВАРКУ",
-              "text": "Погрузчик выходит за ограждение, позиционер разворачивает изделие в исходное положение "
-                      "для сварки"},
-    "done": {"tag": "СВАРКА ЗАВЕРШЕНА",
-             "text": "Оба стыка сварены: сварочный робот уходит в исходную позицию, позиционер возвращает изделие "
-                     "в позицию выгрузки"},
-    "unload": {"tag": "ВЫГРУЗКА",
-               "text": "Прижимы планшайбы освобождают фланец, погрузчик забирает спул из ячейки"},
-    "carrier": {"tag": "ВЫХОДНОЙ РОЛЬГАНГ",
-                "text": "Спул ставится на паллету-спутник и уходит по рольгангу на пост маркировки и контроля"},
-    "mark": {"tag": "МАРКИРОВКА",
-             "text": "Лазерный маркер наносит ID спула и номер WPS — прослеживаемость до каждого шва"},
-    "scan": {"tag": "КОНТРОЛЬ",
-             "text": "Лазерный профилометр сканирует шов, геометрия валика сравнивается с допусками; результат "
-                     "сохраняется по ID спула"},
-    "store": {"tag": "СКЛАДИРОВАНИЕ",
-              "text": "Погрузчик укладывает готовый спул в стеллаж; на стенде сборки уже лежит фланец следующего "
-                      "комплекта"},
+    "flange": {"tag": "ПОДАЧА ДЕТАЛЕЙ", "text": "Робот ставит фланец из кассеты на стенд"},
+    "elbow": {"tag": "СБОРКА", "text": "Отвод встает на фланец по упорам оснастки"},
+    "pipe": {"tag": "КОНТРОЛЬ ЗАЗОРА", "text": "Труба уложена до упора, датчик проверяет зазор"},
+    "tack": {"tag": "ПРИХВАТКА", "text": "Робот ставит по три прихватки на каждый стык"},
+    "carry": {"tag": "ПЕРЕНОС", "text": "Погрузчик забирает собранный спул целиком"},
+    "load": {"tag": "ЗАГРУЗКА В ЯЧЕЙКУ", "text": "Спул на планшайбе, прижимы держат фланец"},
+    "ready": {"tag": "ГОТОВНОСТЬ", "text": "Ячейка свободна, начинается сварка"},
+    "done": {"tag": "СВАРКА ЗАВЕРШЕНА", "text": "Оба стыка сварены, робот отходит"},
+    "unload": {"tag": "ВЫГРУЗКА", "text": "Прижимы разжаты, погрузчик забирает спул"},
+    "carrier": {"tag": "РОЛЬГАНГ", "text": "Спул едет на пост контроля"},
+    "mark": {"tag": "МАРКИРОВКА", "text": "Лазер наносит номер спула"},
+    "scan": {"tag": "КОНТРОЛЬ ШВА", "text": "Лазерный сканер сверяет форму шва с допусками"},
+    "store": {"tag": "СКЛАД", "text": "Готовый спул уложен на стеллаж, на стенде уже следующий комплект"},
 }
 
 END_CARD = {
-    "heading": "Полный цикл участка сварки спулов",
+    "heading": "Полный цикл в одном потоке",
     "flow": ["Кассета комплекта", "Сборка", "Прихватка", "Загрузка в ячейку", "Сварка",
              "Маркировка и контроль", "Стеллаж · AGV"],
-    "kpis": [
-        "3 робота: погрузчик на треке (класс 150 кг, вылет 3,2 м), прихваточный и сварочный на треке "
-        "+ 2-осевой позиционер",
-        "Клещевой захват с V-призмами под DN100–300, сменные губки",
-        "Логистика идёт параллельно сварке: такт участка определяется временем сварки",
-        "Каждый спул прослеживается по ID: режимы швов, результат контроля, место хранения",
+    "facts": [                                 # [value, label]: the value is read, the label explains it
+        ["3 робота", "погрузчик, прихватка, сварка"],
+        ["DN100-300", "один захват, сменные губки"],
+        ["ID спула", "режимы шва, контроль, место на складе"],
     ],
-    "cta": "Этап 2 · Логистика и комплектование · компоновка под данные заказчика",
 }
-FOOTER = "Демонстрационная 3D-симуляция · моделирование на основе фото участка"
+FOOTER = "3D-симуляция по фотографиям участка"
 CORNER_LABEL = "ДЕМО · СИМУЛЯЦИЯ · УСКОРЕНО"
 
 # ----------------------------------------------------------------------------- texts (English)
-# Same keys and structure as the Russian ones; lengths kept close to the Russian so the layout (caption wrap 1160 px,
-# end-card boxes / bullets) stays the same.  Vocabulary (the same word for the same machine in the scene texts,
-# i18n2): pipe spool, loading robot, kit cassette, fit-up station, tack welds, root gap, welding robot, positioner,
-# faceplate, light curtain muting, carrier pallet, roller conveyor, laser marker, WPS, laser profilometer, QC, storage
-# rack; British spelling (centring, modelled, labour).
+# Same keys and structure as the Russian ones.  Vocabulary (the same word for the same machine in the scene texts,
+# i18n2): pipe spool, loading robot, kit, fixture, tack welds, gap, welding robot, positioner, faceplate, clamps,
+# conveyor, laser scanner, storage rack.
 TITLE_EN = {
-    "heading": "Pipe spool welding line: the full cycle",
-    "sub": "Kitting · fit-up and tack welding · cell loading · welding · marking and inspection · storage",
+    "heading": "Pipe spool welding: the full cycle",
+    "sub": "From a kit of parts to the storage rack",
 }
 
 CAPTIONS_EN: Dict[str, Dict[str, str]] = {
-    "flange": {"tag": "KITTING",
-               "text": "A loading robot on a linear track picks the parts from the kit cassette: the flange goes "
-                       "onto the fit-up station, where pneumatic clamps lock it"},
-    "elbow": {"tag": "FIT-UP",
-              "text": "The elbow is set on the flange against centring stops and a V-block — the fixture sets the "
-                      "position, not manual marking-out"},
-    "pipe": {"tag": "FIT-UP · ROOT GAP",
-             "text": "The pipe is laid in the cradle against the end stop; a sensor checks the root gap before "
-                     "tacking"},
-    "tack": {"tag": "TACK WELDING",
-             "text": "A compact welding robot places three tack welds on each joint — the assembly is secured "
-                     "without manual labour"},
-    "carry": {"tag": "TRANSFER",
-              "text": "The tacked spool is picked up in one piece: one kit of parts — one spool"},
-    "load": {"tag": "CELL LOADING",
-             "text": "Welding robot in its home position, light curtain muted: the loading robot sets the spool on "
-                     "the faceplate and the clamps lock the flange"},
-    "ready": {"tag": "HANDOVER TO WELDING",
-              "text": "The loading robot leaves the guarded area and the positioner turns the workpiece to the "
-                      "welding start position"},
-    "done": {"tag": "WELDING COMPLETE",
-             "text": "Both joints are welded: the welding robot returns home and the positioner brings the "
-                     "workpiece back to the unloading position"},
-    "unload": {"tag": "UNLOADING",
-               "text": "The faceplate clamps release the flange and the loading robot takes the spool out of the "
-                       "cell"},
-    "carrier": {"tag": "OUTFEED CONVEYOR",
-                "text": "The spool is set on a carrier pallet and travels along the roller conveyor to the marking "
-                        "and QC station"},
-    "mark": {"tag": "MARKING",
-             "text": "A laser marker applies the spool ID and the WPS number — traceability down to every weld"},
-    "scan": {"tag": "INSPECTION",
-             "text": "A laser profilometer scans the weld and checks the bead geometry against tolerances; the "
-                     "result is stored under the spool ID"},
-    "store": {"tag": "STORAGE",
-              "text": "The loading robot places the finished spool in the storage rack; the flange of the next kit "
-                      "is already on the fit-up station"},
+    "flange": {"tag": "PARTS FEED", "text": "The robot places the flange on the fixture"},
+    "elbow": {"tag": "FIT-UP", "text": "The elbow seats on the flange against stops"},
+    "pipe": {"tag": "GAP CHECK", "text": "Pipe laid against the stop, a sensor checks the gap"},
+    "tack": {"tag": "TACK WELDING", "text": "The robot places three tack welds on each joint"},
+    "carry": {"tag": "TRANSFER", "text": "The loading robot lifts the tacked spool"},
+    "load": {"tag": "CELL LOADING", "text": "Spool on the faceplate, clamps hold it"},
+    "ready": {"tag": "READY TO WELD", "text": "The cell is clear, welding starts"},
+    "done": {"tag": "WELDING COMPLETE", "text": "Both welds done, robot retracts"},
+    "unload": {"tag": "UNLOADING", "text": "Clamps release, the robot takes the spool"},
+    "carrier": {"tag": "CONVEYOR", "text": "On its way to inspection"},
+    "mark": {"tag": "MARKING", "text": "Laser marks the spool ID"},
+    "scan": {"tag": "WELD INSPECTION", "text": "A laser scanner checks the bead against limits"},
+    "store": {"tag": "STORAGE", "text": "The finished spool goes to the rack; the next kit is already on the fixture"},
 }
 
 END_CARD_EN = {
-    "heading": "Full cycle of the spool welding line",
+    "heading": "The full cycle in one flow",
     "flow": ["Kit cassette", "Fit-up", "Tack welding", "Cell loading", "Welding", "Marking and QC", "Rack · AGV"],
-    "kpis": [
-        "3 robots: track-mounted loading robot (150 kg class, 3.2 m reach), tack welding robot, track-mounted "
-        "welding robot + 2-axis positioner",
-        "Clamping gripper with V-blocks for DN100–300, interchangeable jaws",
-        "Logistics runs in parallel with welding: the welding time sets the cycle time of the line",
-        "Every spool is traceable by its ID: weld parameters, QC result, storage location",
+    "facts": [
+        ["3 robots", "loading, tacking, welding"],
+        ["DN100–300", "one gripper, interchangeable jaws"],
+        ["Spool ID", "weld data, inspection, storage slot"],
     ],
-    "cta": "Stage 2 · Logistics and kitting · layout to be tailored to customer data",
 }
-FOOTER_EN = "Demonstration 3D simulation · modelled on photos of the shop floor"
+FOOTER_EN = "3D simulation based on shop-floor photos"
 CORNER_LABEL_EN = "DEMO · SIMULATION · SPED UP"
 
 # Stage-1 captions (demo_video/post/storyboard.json, burned into the stage-1 video) for the render mode, keyed by the
-# exact Russian tag (note the Latin A / B and the en dash of the stage-1 tags).  All 8 are translated; the edit shows
-# the 6 inside the stage-1 frames it uses.  "key" names the caption in the storyboard.
+# exact Russian tag of the stage-1 storyboard (note the Latin A / B and the en dash of the stage-1 tags).  The texts
+# are short versions for the stage-2 look (the stage-1 video shows longer ones in its own caption boxes); the edit
+# shows the 6 inside the stage-1 frames it uses.  "key" names the caption in the storyboard.
+S1_CAPTIONS_RU: Dict[str, Dict[str, str]] = {
+    "ПОДГОТОВКА": {"key": "s1_setup", "tag": "ПОДГОТОВКА",
+                   "text": "Позиционер выставляет стык A, робот подъезжает"},
+    "АДАПТАЦИЯ": {"key": "s1_tracking", "tag": "ПОИСК СТЫКА", "text": "Лазер сканирует стык"},
+    "ШОВ A · ВРАЩЕНИЕ ИЗДЕЛИЯ": {"key": "s1_weld_a", "tag": "ШОВ A · ВРАЩЕНИЕ ИЗДЕЛИЯ",
+                                "text": "Фланец с отводом: изделие вращается, горелка стоит в верхней точке"},
+    "ПЕРЕМЕЩЕНИЕ ПО ТРЕКУ": {"key": "s1_track", "tag": "ПЕРЕЕЗД ПО ТРЕКУ",
+                             "text": "Робот переезжает по треку к стыку B"},
+    "ШОВ B · СЕКТОРЫ 1–2": {"key": "s1_weld_b12", "tag": "ШОВ B · СЕКТОРЫ 1-2",
+                           "text": "Отвод с трубой: горелку ведет робот, два сектора по 90°"},
+    "ИНДЕКСАЦИЯ 180°": {"key": "s1_index", "tag": "ПОВОРОТ НА 180°",
+                        "text": "Позиционер переворачивает изделие, робот переезжает"},
+    "ШОВ B · СЕКТОРЫ 3–4": {"key": "s1_weld_b34", "tag": "ШОВ B · СЕКТОРЫ 3-4",
+                           "text": "Вторая половина шва B: снова сверху, без потолочной сварки"},
+    "ЗАВЕРШЕНИЕ": {"key": "s1_done", "tag": "ЦИКЛ ЗАВЕРШЕН",
+                   "text": "Оба стыка сварены, режимы записаны по номеру спула"},
+}
 S1_CAPTIONS_EN: Dict[str, Dict[str, str]] = {
     "ПОДГОТОВКА": {"key": "s1_setup", "tag": "PREPARATION",
-                   "text": "The positioner tilts the workpiece to bring joint A into the flat position. The robot "
-                           "approaches along the track"},
-    "АДАПТАЦИЯ": {"key": "s1_tracking", "tag": "PATH ADAPTATION",
-                  "text": "A laser sensor on the torch scans the joint: the path is corrected to match the actual "
-                          "fit-up geometry"},
-    "ШОВ A · ВРАЩЕНИЕ ИЗДЕЛИЯ": {"key": "s1_weld_a", "tag": "WELD A · WORKPIECE ROTATION",
-                                "text": "Weld A: flange to elbow. The workpiece rotates 360° while the torch stays at "
-                                        "12 o'clock, weaving across the joint"},
+                   "text": "Positioner presents joint A, the robot moves in"},
+    "АДАПТАЦИЯ": {"key": "s1_tracking", "tag": "SEAM FINDING", "text": "Laser finds the seam"},
+    "ШОВ A · ВРАЩЕНИЕ ИЗДЕЛИЯ": {"key": "s1_weld_a", "tag": "WELD A · PART ROTATES",
+                                "text": "Flange to elbow: the part rotates, the torch stays on top"},
     "ПЕРЕМЕЩЕНИЕ ПО ТРЕКУ": {"key": "s1_track", "tag": "TRACK TRAVEL",
-                             "text": "After weld A, the pipe lies along the track: the robot travels on its 7th "
-                                     "axis to joint B"},
+                             "text": "The robot travels along the track to joint B"},
     "ШОВ B · СЕКТОРЫ 1–2": {"key": "s1_weld_b12", "tag": "WELD B · SECTORS 1–2",
-                           "text": "Weld B: elbow to pipe. Here the robot moves the torch: two 90° sectors, from "
-                                   "12 to 3 and from 12 to 9 o'clock"},
-    "ИНДЕКСАЦИЯ 180°": {"key": "s1_index", "tag": "180° INDEXING",
-                        "text": "The positioner flips the workpiece 180° over the top and the robot moves to the "
-                                "other side: the unwelded half of joint B is on top again"},
+                           "text": "Elbow to pipe: the robot moves the torch, two 90° sectors"},
+    "ИНДЕКСАЦИЯ 180°": {"key": "s1_index", "tag": "180° TURN",
+                        "text": "The positioner flips the part, the robot relocates"},
     "ШОВ B · СЕКТОРЫ 3–4": {"key": "s1_weld_b34", "tag": "WELD B · SECTORS 3–4",
-                           "text": "Sectors 3–4: after indexing, the whole seam is welded between the flat and "
-                                   "vertical positions, never overhead"},
+                           "text": "Second half of weld B: on top again, never overhead"},
     "ЗАВЕРШЕНИЕ": {"key": "s1_done", "tag": "CYCLE COMPLETE",
-                   "text": "Cycle complete: both joints welded, the robot and the positioner return to the loading "
-                           "position. The parameters of each weld are stored under the spool ID"},
+                   "text": "Both joints welded, parameters saved to the spool ID"},
 }
 
 TEXTS = {
     "ru": dict(title=TITLE, captions=CAPTIONS, end_card=END_CARD, footer=FOOTER, corner_label=CORNER_LABEL,
-               s1_captions=None),                  # None: the stage-1 captions as they are (Russian)
+               s1_captions=S1_CAPTIONS_RU),
     "en": dict(title=TITLE_EN, captions=CAPTIONS_EN, end_card=END_CARD_EN, footer=FOOTER_EN,
                corner_label=CORNER_LABEL_EN, s1_captions=S1_CAPTIONS_EN),
 }
+
+# fonts of the overlays: bare file names, resolved in stage2_logistics/assets/fonts (Fira Sans, SIL OFL)
+FONTS = {"font": "FiraSans-Regular.ttf", "font_bold": "FiraSans-Medium.ttf", "font_light": "FiraSans-Light.ttf"}
 
 # ----------------------------------------------------------------------------- timing (output frames)
 TITLE_TAIL = 10            # title ends this many frames before the end of the first segment
 CAPTION_IN = 3             # caption starts out0 + 3
 CAPTION_OUT = 4            # caption ends 4 frames before its boundary frame
-END_CARD_FRAMES = 100      # end card = last 100 frames of the last segment (~4.2 s)
+END_CARD_FRAMES = 110      # end card = last 110 frames of the last segment (~4.6 s)
+READ_CPS = 15.0            # reading speed limit: characters of a text per second it is fully visible
 MIN_CAPTION = 28           # frames
 MIN_GAP = 4                # empty frames between two overlays of the title/caption/end-card track
 FADE = 12                  # stage-1 fades: title/captions 12 frames, end card 14
@@ -238,10 +206,11 @@ FADE_END = 14
 #   title     large, top left (the title text is the bottom-third bar), title timing and fades
 #   corner    small, top left (the stage-1 corner label is top RIGHT, same y), title end + 1 .. end card start - 1,
 #             drawn over the whole video (stage-1 video segments included), fades only at its own start / end
-#   end_card  centred above the heading, part of the end-card image (overlays2.render_end_card2)
-LOGO_TITLE = {"x": 80, "y": 64, "height": 150}
-LOGO_CORNER = {"x": 80, "y": 40, "height": 64, "opacity": 1.0}
-LOGO_END_CARD = {"height": 120}
+#   end_card  top left above the heading, part of the end-card image (overlays2.render_end_card2)
+# "opacity": the plate is slightly transparent, the footage shows through it.
+LOGO_TITLE = {"x": 72, "y": 64, "height": 180, "opacity": 0.88}
+LOGO_CORNER = {"x": 80, "y": 36, "height": 77, "opacity": 0.88}
+LOGO_END_CARD = {"x": 76, "y": 60, "height": 144, "opacity": 0.92}
 
 # ----------------------------------------------------------------------------- sound layers
 # Scene-interval kind (edl["intervals"]) -> synthesized layer.  "db" = RMS inside the layer's own intervals before
@@ -469,8 +438,7 @@ def build(E: dict, s1_sb: dict = None) -> dict:
     ec_start = max(last["out0"], last["out1"] - END_CARD_FRAMES + 1)
     title = dict(T["title"], start=1, end=segs[0]["out1"] - TITLE_TAIL)
     end_card = {"start": ec_start, "end": last["out1"], "heading": T["end_card"]["heading"],
-                "flow": list(T["end_card"]["flow"]), "kpis": list(T["end_card"]["kpis"]),
-                "lines": list(T["end_card"]["kpis"]), "cta": T["end_card"]["cta"]}
+                "flow": list(T["end_card"]["flow"]), "facts": [list(f) for f in T["end_card"]["facts"]]}
     captions = plan_captions(E, ec_start, T["captions"])
     if ed["stage1_mode"] == "render":
         captions = sorted(captions + plan_s1_captions(E, s1_sb, T["s1_captions"]), key=lambda c: c["start"])
@@ -482,8 +450,9 @@ def build(E: dict, s1_sb: dict = None) -> dict:
         "fps": int(E.get("fps", 24)),
         "frames": frames,
         "resolution": list(s1_sb.get("resolution", [1920, 1080])),
-        "font": s1_sb["font"],
-        "font_bold": s1_sb["font_bold"],
+        "font": FONTS["font"],
+        "font_bold": FONTS["font_bold"],
+        "font_light": FONTS["font_light"],
         "title": title,
         "captions": captions,
         "end_card": end_card,
@@ -540,6 +509,24 @@ def strings(obj, path="sb"):
 CYRILLIC_OK = {"sb.audio.weld_prefix"}
 
 
+def visible_seconds(a: int, b: int, fade: int, fps: int) -> float:
+    """Time an overlay shown on output frames a..b is fully visible: its length minus one fade."""
+    return (b - a + 1 - fade) / fps
+
+
+def reading(sb: dict) -> List[tuple]:
+    """(name, characters, visible seconds) of every text that has to be read in its time: the title heading, every
+    caption text, the end card (heading + fact values; the labels and the flow diagram are for a second look)."""
+    fps = sb["fps"]
+    t, e = sb["title"], sb["end_card"]
+    out = [("title", len(t["heading"]), visible_seconds(t["start"], t["end"], FADE, fps))]
+    out += [("caption " + str(c.get("key") or c["tag"]), len(c["text"]),
+             visible_seconds(c["start"], c["end"], FADE, fps)) for c in sb["captions"]]
+    n = len(e["heading"]) + sum(len(v) for v, _ in e.get("facts") or [])
+    out.append(("end card", n, visible_seconds(e["start"], e["end"], FADE_END, fps)))
+    return out
+
+
 def check(sb: dict, E: dict, s1_sb: dict = None) -> List[str]:
     """Return a list of problems (empty = ok): overlaps, gaps < MIN_GAP, too short, overlays over s1 segments,
     stage-1 burned-in texts cut by the edit or closer than MIN_GAP to a stage-2 overlay, stage-2 captions over a
@@ -567,6 +554,10 @@ def check(sb: dict, E: dict, s1_sb: dict = None) -> List[str]:
             P.append(f"{name}: {b - a + 1} frames is not longer than two {fade}-frame fades")
         if not any(o0 <= a and b <= o1 for o0, o1 in blocks):
             P.append(f"{name}: {a}..{b} is not inside one stage-2 block {blocks}")
+    for name, n, sec in reading(sb):
+        if n > READ_CPS * sec + 1e-6:
+            P.append(f"{name}: {n} characters in {sec:.1f} s = {n / sec:.1f} per second > {READ_CPS:.0f}: "
+                     f"shorten the text to {int(READ_CPS * sec)} characters")
     for c in sb["captions"]:
         if c["end"] - c["start"] + 1 < MIN_CAPTION:
             P.append(f"caption {c.get('key')}: {c['end'] - c['start'] + 1} frames < {MIN_CAPTION}")
@@ -650,8 +641,10 @@ def summary(sb: dict) -> str:
              f"{sb['corner_ranges']}, s1 ranges {sb['s1_ranges']}",
              f"  title      {sb['title']['start']:5d}-{sb['title']['end']:5d}"]
     for c in sb["captions"]:
+        sec = visible_seconds(c["start"], c["end"], FADE, fps)
         lines.append(f"  {c['key']:<11s}{c['start']:5d}-{c['end']:5d}  {(c['end'] - c['start'] + 1) / fps:4.1f} s"
-                     f"  {c['tag']}" + (f"  (stage-1 {c['s1'][0]}-{c['s1'][1]})" if c.get("s1") else ""))
+                     f"  {len(c['text']) / sec:4.1f} ch/s  {c['tag']}"
+                     + (f"  (stage-1 {c['s1'][0]}-{c['s1'][1]})" if c.get("s1") else ""))
     e = sb["end_card"]
     lines.append(f"  end card   {e['start']:5d}-{e['end']:5d}  {(e['end'] - e['start'] + 1) / fps:4.1f} s")
     lg = sb.get("logos") or {}

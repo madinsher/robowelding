@@ -149,10 +149,10 @@ def render_recording(sb: dict, out_dir: Path):
 
 
 def storyboard_words(sb: dict) -> set:
-    """Words of every text the overlays must draw (tags upper-case, like overlays.render_caption)."""
+    """Words of every text the overlays must draw (tags upper-case, like overlays2.render_caption2)."""
     t, e = sb["title"], sb["end_card"]
-    texts = [t["heading"], t["sub"], e["heading"], e["cta"], sb["footer"], sb["corner_label"]]
-    texts += list(e["flow"]) + list(e["kpis"])
+    texts = [t["heading"], t["sub"], e["heading"], sb["footer"], sb["corner_label"]]
+    texts += list(e["flow"]) + [s for f in e["facts"] for s in f]
     for c in sb["captions"]:
         texts += [c["tag"].upper(), c["text"]]
     return {w for s in texts for w in s.split()}
@@ -226,11 +226,12 @@ def storyboard_checks(ed: dict, E: dict):
         want = []
         for c in s1_sb["captions"]:
             for o0, o1 in edl_mod.map_stage1_intervals(E, [[c["start"], c["end"]]]):
-                en = storyboard2.S1_CAPTIONS_EN[c["tag"]]
+                en = storyboard2.TEXTS[sb["lang"]]["s1_captions"][c["tag"]]      # short texts, edition language
                 want.append((o0, o1, en["tag"], en["text"], o1 - o0 == c["end"] - c["start"]))
         got = [(c["start"], c["end"], c["tag"], c["text"], True) for c in caps1]
         check(len(want) == 6 and sorted(got) == sorted(want),
-              f"{len(caps1)} stage-1 captions, translated, complete, at the output frames of their stage-1 frames")
+              f"{len(caps1)} stage-1 captions in the language of the edition, complete, at the output frames of their "
+              f"stage-1 frames")
         for c in caps1:
             print(f"      {c['key']:<12s} {c['start']:5d}-{c['end']:5d} = stage-1 {c['s1'][0]}-{c['s1'][1]}  "
                   f"{c['tag']}")
@@ -270,15 +271,17 @@ def storyboard_checks(ed: dict, E: dict):
     lc = [o for o in ovs if o.name == "logo_corner"]
     t = sb["title"]
     check(len(lt) == 1 and (lt[0].start, lt[0].end, overlays2.fades(lt[0]), lt[0].whole) ==
-          (t["start"], t["end"], (12, 12), False) and (lt[0].x, lt[0].y) == (80, 64)
-          and Image.open(lt[0].path).height == 150, "title logo: 150 px plate at (80, 64), title timing and fades")
+          (t["start"], t["end"], (12, 12), False) and (lt[0].x, lt[0].y) == (72, 64)
+          and Image.open(lt[0].path).height == 180 and lt[0].opacity == 0.88,
+          "title logo: 180 px plate at (72, 64), 88 % opaque, title timing and fades")
     check(len(lc) == 1 and (lc[0].start, lc[0].end, overlays2.fades(lc[0]), lc[0].whole) ==
-          (t["end"] + 1, ec["start"] - 1, (12, 12), True) and (lc[0].x, lc[0].y) == (80, 40)
-          and Image.open(lc[0].path).height == 64,
-          f"corner logo: 64 px plate at (80, 40), whole video {t['end'] + 1}..{ec['start'] - 1}, 12-frame fades")
+          (t["end"] + 1, ec["start"] - 1, (12, 12), True) and (lc[0].x, lc[0].y) == (80, 36)
+          and Image.open(lc[0].path).height == 77 and lc[0].opacity == 0.88,
+          f"corner logo: 77 px plate at (80, 36), 88 % opaque, whole video {t['end'] + 1}..{ec['start'] - 1}, "
+          f"12-frame fades")
     lay = overlays2.end_card_layout(overlays2.with_fonts(sb))
     check(Image.open([o for o in ovs if o.name == "end_card"][0].path).size == (1920, 1080)
-          and lay["logo_box"] is not None and 110 <= lay["logo_h"] <= 130 and lay["end"] <= lay["limit"],
+          and lay["logo_box"] is not None and 135 <= lay["logo_h"] <= 150 and lay["end"] <= lay["limit"],
           f"end card 1920x1080: logo {lay['logo_h']} px, content {lay['y0']}..{lay['end']} above the footer "
           f"(<= {lay['limit']}, gaps at {lay['spacing']:.0%})")
     for c in sb["captions"]:
@@ -476,9 +479,13 @@ def run_edition(name: str, threads: int, skip_compose: bool, sb: dict) -> None:
         fr = brand_fraction(frames[f - 1], boxes[k], col)
         check(fr >= 0.6 * ref[k], f"{what}: out {f}, box {boxes[k]}: {fr:.1%} brand-colour pixels "
                                   f"(plate itself {ref[k]:.1%})")
-    fr = brand_fraction(frames[ctrl_f - 1], boxes["title"], col)
-    check(fr < 0.002, f"no logo top left during the end card (out {ctrl_f}: {fr:.2%}; corner logo ends "
-                      f"{lg['corner']['end']})")
+    # the end-card logo sits top left as well: the corner logo must be gone by then.  Its top rows lie above the
+    # end-card plate, so that strip shows no brand colour once the corner logo has faded out
+    cb, eb = boxes["corner"], boxes["end_card"]
+    strip = (cb[0], cb[1], cb[2], min(cb[3], eb[1]))
+    fr = brand_fraction(frames[ctrl_f - 1], strip, col)
+    check(fr < 0.002, f"no corner logo above the end-card logo during the end card (out {ctrl_f}, strip {strip}: "
+                      f"{fr:.2%}; corner logo ends {lg['corner']['end']})")
 
     sheet(frames, cps, OUT / f"post_check_sheet_{name}.jpg")
     stills = {"title": title_f, "caption": still_cap, "s1caption": still_s1, "endcard": end_f}
