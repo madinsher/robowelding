@@ -11,7 +11,7 @@ What is built (mm / deg, RoboDK convention; the layout comes from stage2_logisti
   * the stage-1 cell, built by the stage-1 functions of demo_video/robodk/build_station.py (imported, not modified):
     welding robot ABB IRB 4600 on its Y track, MIG torch, 2-axis positioner, cell dressing, cameras, the stage-1
     programs incl. "DemoCycle" (the welding choreography).  Instead of the one-piece stage-1 spool the positioner gets
-    a "Faceplate spool frame" (+ seam curves, clamp studs): the spool arrives there as three separate parts;
+    a "Faceplate spool frame" (+ seam curves, swing clamps): the spool arrives there as three separate parts;
   * handler robot ABB IRB 6700-150/3.20 (RoboDK library) on a 1-axis floor track along X ("Handler track X",
     BuildMechanism 1T, joint value = world x of the J1 axis), tong gripper tool (STL generated here, TCP Tz(420));
   * tack robot ABB IRB 1600-6/1.45 (or IRB 1520ID) on a pedestal with the stage-1 MIG torch;
@@ -22,7 +22,7 @@ What is built (mm / deg, RoboDK convention; the layout comes from stage2_logisti
   * spool parts "Part flange" / "Part elbow" / "Part pipe" (+ "Part flange 2" of the next kit) as separate objects
     whose frame is the spool frame of the assembled spool (layout2 convention);
   * macros (Python programs written to generated/): GripperClose / GripperOpen (attach / release parts, the released
-    parts go to the holder under the TCP: faceplate, carrier or the Logistics frame), StudsUp / StudsDown,
+    parts go to the holder under the TCP: faceplate, carrier or the Logistics frame), ClampsClose / ClampsOpen,
     TackArcOn / TackArcOff, ArcOn / ArcOff (stage-1 names, bead traced on the elbow), ResetParts, QC_MarkScan,
     View_* (stage-1 shots) and View2_* (stage-2 shots from cameras2.py);
   * programs: HTrack_* (handler carriage), Conv_* (carrier), Pos_RotLoad / Pos_RotUnload (faceplate), Handler_Home,
@@ -83,6 +83,7 @@ def _import_layout2():
 
 L2 = _import_layout2()
 L1 = L2.L                                                    # stage-1 cell/layout.py (metres)
+import pos_clamps as PC                                      # noqa: E402  swing-clamp dimensions (metres)
 
 # =====================================================================================================================
 # 1. Settings and constants (mm / deg)
@@ -109,7 +110,9 @@ HTRACK_NAME = "Handler track X"
 CARRIER_NAME = "Carrier pallet X"
 GRIPPER_NAME = "Tong gripper"
 TACK_TORCH_NAME = "Tack torch"
-STUDS_NAME = "Clamp studs"
+CLAMPS_NAME = "Flange clamps"                 # swing-clamp bodies on the faceplate (always shown)
+CLAMP_ARMS_OPEN = "Clamp arms open"           # the four arms turned away from the flange: shown while unclamped
+CLAMP_ARMS_CLOSED = "Clamp arms closed"       # the four arms on the flange rim: shown while clamped
 PART_NAMES = dict(flange="Part flange", elbow="Part elbow", pipe="Part pipe", flange2="Part flange 2")
 HANDLER_LIBRARY_GLOBS = ["*IRB*6700*150*3.20*.robot", "*IRB*6700*150*3*20*.robot", "*IRB*6700*150*.robot",
                          "*IRB*6700*.robot"]
@@ -464,7 +467,7 @@ def handler_plan(plan):
                   + pick_place("Spool_Pick", Fs, "spool", x_st, LIFTS["spool"], "stn_spool_grip", "Station", True)
                   + [("movej", wp("Spool_LiftHigh", T_high, x_st, "stn_spool_grip"))]))
     # ---- loading: pre-entry outside the fence, the carriage runs in (the TCP moves straight along +X), linear entry,
-    # lower onto the faceplate (pipe leg toward -X at POS_LOAD_ROT), studs up, open, out the same way
+    # lower onto the faceplate (pipe leg toward -X at POS_LOAD_ROT), clamps close, gripper opens, out the same way
     G_pos = oriented_like(positioner_frame(L2.POS_LOAD_ROT) * grasp_frame("spool"), ref_of("load_contact"))
     G_app = above(G_pos, L2.POS_APPROACH_DZ * M)
     G_pre = transl(PRE_ENTRY_TCP_X - G_app.Pos()[0], 0.0, 0.0) * G_app
@@ -475,11 +478,11 @@ def handler_plan(plan):
     wp("Load_Place", G_pos, X_AT_POSITIONER, "load_contact", exact=True)
     progs.append(("LoadPositioner", [
         ("comment", "Load the tacked spool onto the positioner (tilt 0, faceplate %.0f deg): pre-entry at carriage "
-                    "x=%.0f outside the fence, muting, carriage in, linear entry, lower, studs up, open, exit"
+                    "x=%.0f outside the fence, muting, carriage in, linear entry, lower, clamps close, open, exit"
          % (L2.POS_LOAD_ROT, SWING_X)),
         ("speed", "air"), ("track", SWING_X, "Swing"), ("movej", "Load_PreEntry"), ("view", "S2_08_load"),
         ("do", "LightCurtainMuting", 1), ("track", X_AT_POSITIONER, "Positioner"), ("movel", "Load_Entry"),
-        ("movel", "Load_Approach"), ("speed", "fine"), ("movel", "Load_Place"), ("call", "StudsUp"),
+        ("movel", "Load_Approach"), ("speed", "fine"), ("movel", "Load_Place"), ("call", "ClampsClose"),
         ("do", "GripperClosed", 0), ("call", "GripperOpen"), ("movel", "Load_Approach"), ("speed", "air"),
         ("movel", "Load_Entry"), ("track", SWING_X, "Swing"), ("do", "LightCurtainMuting", 0)]))
     T_idle = oriented_like(transl(*IDLE_TCP) * rotx(math.pi) * rotz(math.pi), ref_of("handler_idle"))
@@ -492,7 +495,7 @@ def handler_plan(plan):
         ("speed", "air"), ("track", SWING_X, "Swing"), ("movej", "Load_PreEntry"), ("view", "S2_11_unload"),
         ("do", "LightCurtainMuting", 1), ("track", X_AT_POSITIONER, "Positioner"), ("movel", "Load_Entry"),
         ("movel", "Load_Approach"), ("speed", "fine"), ("movel", "Load_Place"), ("do", "GripperClosed", 1),
-        ("call", "GripperClose"), ("call", "StudsDown"), ("movel", "Load_Approach"), ("speed", "air"),
+        ("call", "GripperClose"), ("call", "ClampsOpen"), ("movel", "Load_Approach"), ("speed", "air"),
         ("movel", "Load_Entry"), ("track", SWING_X, "Swing"), ("do", "LightCurtainMuting", 0)]))
     progs.append(("ToConveyor", [("comment", "Welded spool onto the carrier pallet at the conveyor load station"),
                                  ("view", "S2_12_carrier")]
@@ -593,7 +596,7 @@ DEMO_CYCLE2 = [   # (kind, name): the main program; "view" entries are skipped w
     ("call", "Handler_Home"), ("pause", 2000)]
 
 CYCLE2_HOME = ["ResetParts", "Handler_Home", "Tack_Home", "Conv_ToLoad", "Robot_Home", "Track_Home", "Pos_TiltDown",
-               "Pos_RotLoad", "StudsDown"]
+               "Pos_RotLoad", "ClampsOpen"]
 
 
 # =====================================================================================================================
@@ -947,14 +950,36 @@ def handler_carriage_shapes(x):
             (B.box_tris((x - 100, y - 620, 400), (250, 180, 250)), GREY)]                         # drive
 
 
-def studs_local():
-    """The six clamp studs / nuts over the flange (spool-local), shown while clamped (StudsUp)."""
-    out = []
-    for k in range(6):
-        a = 2 * math.pi * (2 * k + 0.5) / 12
-        x, y = 177.5 * math.cos(a), 177.5 * math.sin(a)
-        out += B.cylinder_tris((x, y, FLANGE_THK), (x, y, FLANGE_THK + 20), 17.0, 6)
-    return out
+def clamp_shapes():
+    """The four pneumatic swing clamps of the faceplate with the dimensions of the video (pos_clamps.py), in the
+    spool frame (mm; the faceplate top is at z = -POS_FIXTURE_THICK).  Returns (bodies, arms_open, arms_closed), each
+    [(tris, colour)]: the bodies stand on the faceplate around the fixture ring; an open arm is turned 90 deg away from
+    the flange and lifted, a closed arm lies on the rim of the flange between two bolt holes.  The clamps stand at
+    0 / 90 / 180 / 270 deg, so every arm is an axis-aligned box in both states."""
+    z0 = -B.POS_FIXTURE_THICK
+    bodies, arms = [], {True: [], False: []}
+    for deg in PC.ANGLES_DEG:
+        a = math.radians(deg)
+        ca, sa = int(round(math.cos(a))), int(round(math.sin(a)))
+        if abs(ca) + abs(sa) != 1:
+            raise ValueError("pos_clamps.ANGLES_DEG must be multiples of 90 deg for the RoboDK shapes")
+        x, y = PC.R_BODY * M * ca, PC.R_BODY * M * sa
+        bx, by, bz = PC.BASE[0] * M, PC.BASE[1] * M, PC.BASE[2] * M
+        z_body = z0 + PC.BODY_H * M
+        bodies.append((B.box_tris((x, y, z0 + bz / 2), (bx, by, bz)), DARK))                    # foot on the T-slot
+        bodies.append((B.cylinder_tris((x, y, z0 + bz), (x, y, z_body), PC.BODY_R * M, 24), DARK))
+        for closed in (True, False):
+            dx, dy = (-ca, -sa) if closed else (sa, -ca)             # arm direction from the clamp axis
+            za = z0 + PC.Z_ARM * M + (0.0 if closed else PC.LIFT * M)                            # arm underside
+            c = (PC.ARM_LEN / 2 - PC.ARM_BACK) * M
+            size = ((PC.ARM_LEN * M, PC.ARM_W * M, PC.ARM_T * M) if dx
+                    else (PC.ARM_W * M, PC.ARM_LEN * M, PC.ARM_T * M))
+            px, py = x + dx * PC.PAD_X * M, y + dy * PC.PAD_X * M
+            arms[closed] += [
+                (B.cylinder_tris((x, y, z_body - 5.0), (x, y, za), PC.ROD_R * M, 16), STEEL),    # piston rod
+                (B.box_tris((x + dx * c, y + dy * c, za + PC.ARM_T * M / 2), size), STEEL),
+                (B.cylinder_tris((px, py, za - PC.PAD_H * M), (px, py, za), PC.PAD_R * M, 16), DARK)]
+    return bodies, arms[False], arms[True]
 
 
 def logistics_static_objects():
@@ -1102,16 +1127,19 @@ if held:
 RDK.setParam("GRIPPER", "OPEN")
 '''
 
-STUDS_SRC = '''# {name}: positioner clamp studs {state} (the flange of the spool is {verb}). Generated by build_station2.py
+CLAMPS_SRC = '''# {name}: the swing clamps of the positioner faceplate {state} (the flange of the spool is {verb}).
+# The arms are two objects - turned away / on the flange rim - and the macro shows the right one.
+# Generated by build_station2.py
 from robodk.robolink import *
 RDK = Robolink()
-studs = RDK.Item({studs!r}, ITEM_TYPE_OBJECT)
-if studs.Valid():
-    studs.setVisible({visible})
-RDK.setParam("POS_STUDS", {param!r})
+for name, visible in (({closed!r}, {is_closed}), ({opened!r}, {is_open})):
+    arms = RDK.Item(name, ITEM_TYPE_OBJECT)
+    if arms.Valid():
+        arms.setVisible(visible)
+RDK.setParam("POS_CLAMPS", {param!r})
 '''
 
-RESET_PARTS_SRC = '''# ResetParts: put every movable part back to its start pose (kit pallet / pipe buffer), studs down, clear the bead
+RESET_PARTS_SRC = '''# ResetParts: put every movable part back to its start pose (kit pallet / pipe buffer), clamps open, clear the bead
 # traces - lets DemoCycle2 run again. Generated by build_station2.py
 from robodk.robolink import *
 from robodk.robomath import *
@@ -1123,12 +1151,13 @@ for name, rows in START.items():
     if part.Valid():
         part.setParent(frame)
         part.setPose(Mat(rows))
-studs = RDK.Item({studs!r}, ITEM_TYPE_OBJECT)
-if studs.Valid():
-    studs.setVisible(False)
+for name, visible in (({closed!r}, False), ({opened!r}, True)):
+    arms = RDK.Item(name, ITEM_TYPE_OBJECT)
+    if arms.Valid():
+        arms.setVisible(visible)
 RDK.Spray_Clear()
 RDK.setParam("GRIPPER", "OPEN")
-RDK.setParam("POS_STUDS", "DOWN")
+RDK.setParam("POS_CLAMPS", "OPEN")
 '''
 
 QC_SRC = '''# QC_MarkScan: laser marking of the spool ID + weld-profile scan of seam B at the QC arch. Generated by build_station2.py
@@ -1195,12 +1224,13 @@ def write_macros2(cell):
     src = {
         "GripperClose": GRIPPER_CLOSE_SRC.format(robot=HANDLER_NAME, tool=GRIPPER_NAME, grasp=grasp_points(), tol=40.0),
         "GripperOpen": GRIPPER_OPEN_SRC.format(tool=GRIPPER_NAME, holders=holder_table(), snap_mm=15.0, snap_rad=0.05),
-        "StudsUp": STUDS_SRC.format(name="StudsUp", state="up", verb="clamped", studs=STUDS_NAME, visible=True, param="UP"),
-        "StudsDown": STUDS_SRC.format(name="StudsDown", state="down", verb="free", studs=STUDS_NAME, visible=False,
-                                      param="DOWN"),
+        "ClampsClose": CLAMPS_SRC.format(name="ClampsClose", state="close", verb="clamped", closed=CLAMP_ARMS_CLOSED,
+                                         opened=CLAMP_ARMS_OPEN, is_closed=True, is_open=False, param="CLOSED"),
+        "ClampsOpen": CLAMPS_SRC.format(name="ClampsOpen", state="open", verb="free", closed=CLAMP_ARMS_CLOSED,
+                                        opened=CLAMP_ARMS_OPEN, is_closed=False, is_open=True, param="OPEN"),
         "TackArcOn": TACK_ARC_ON_SRC.format(torch=TACK_TORCH_NAME, part=elbow),
         "TackArcOff": TACK_ARC_OFF_SRC,
-        "ResetParts": RESET_PARTS_SRC.format(frame=LOGISTICS_FRAME, studs=STUDS_NAME,
+        "ResetParts": RESET_PARTS_SRC.format(frame=LOGISTICS_FRAME, closed=CLAMP_ARMS_CLOSED, opened=CLAMP_ARMS_OPEN,
                                              start={n: rows(T) for n, T in cell.part_start.items()}),
         "QC_MarkScan": QC_SRC,
     }
@@ -1239,7 +1269,8 @@ class Cell2(B.Cell):
         self.tack = None
         self.tack_torch = None
         self.carrier = None
-        self.studs = None
+        self.clamps = None            # swing-clamp bodies on the faceplate
+        self.clamp_arms = {}          # "open" / "closed": the two arm objects, one of them visible
         self.objects = {}
         self.parts = {}
         self.part_start = {}
@@ -1282,7 +1313,8 @@ def close_open_station(RDK):
 
 def add_faceplate_frame(RDK, cell):
     """Replaces stage-1 add_spool: a reference frame on the faceplate at the spool frame (30 mm above the plate), the
-    seam curves on it (for the curve-follow projects) and the clamp studs (hidden = retracted)."""
+    seam curves on it (for the curve-follow projects) and the swing clamps of the flange (bodies + the arms in
+    their two states; the open arms are shown until ClampsClose)."""
     fr = RDK.AddFrame(FACEPLATE_FRAME)
     B.mount_on_flange(RDK, fr, cell.rot, 1, transl(0, 0, B.POS_FIXTURE_THICK))
     cell.faceplate_frame = fr
@@ -1293,12 +1325,16 @@ def add_faceplate_frame(RDK, cell):
         curve.setParent(fr)
         curve.setPose(eye(4))
         cell.curves[which] = curve
-    studs = B.add_shape_object(RDK, STUDS_NAME, [(studs_local(), STEEL)])
-    studs.setParent(fr)
-    studs.setPose(eye(4))
-    studs.setVisible(False)
-    cell.studs = studs
-    cell.objects[STUDS_NAME] = studs
+    bodies, arms_open, arms_closed = clamp_shapes()
+    for name, shapes, visible in ((CLAMPS_NAME, bodies, True), (CLAMP_ARMS_OPEN, arms_open, True),
+                                  (CLAMP_ARMS_CLOSED, arms_closed, False)):
+        ob = B.add_shape_object(RDK, name, shapes)
+        ob.setParent(fr)
+        ob.setPose(eye(4))
+        ob.setVisible(visible)
+        cell.objects[name] = ob
+    cell.clamps = cell.objects[CLAMPS_NAME]
+    cell.clamp_arms = {"open": cell.objects[CLAMP_ARMS_OPEN], "closed": cell.objects[CLAMP_ARMS_CLOSED]}
 
 
 def add_static(RDK, cell):
@@ -1596,8 +1632,9 @@ STAGE1_ROBOT_PROGRAMS = ("Robot_Transit", "Robot_ApproachA", "Robot_ScanA", "Rob
 
 def build(RDK, plan=None):
     """Build the full-cycle station in the connected RoboDK instance; returns the Cell2 with all items."""
-    saved = (B.GEN_DIR, B.ARC_ON_SRC, B.ARC_OFF_SRC)
+    saved = (B.GEN_DIR, B.ARC_ON_SRC, B.ARC_OFF_SRC, B.FLANGE_BOLTS)
     B.GEN_DIR = GEN_DIR                           # stage-1 generated files (torch.stl, macros) go to our folder
+    B.FLANGE_BOLTS = False                        # the flange is held by the swing clamps, not bolted to the faceplate
     B.ARC_ON_SRC = ARC_ON2_SRC.format(part=PART_NAMES["elbow"])
     B.ARC_OFF_SRC = ARC_OFF2_SRC
     try:
@@ -1649,7 +1686,7 @@ def build(RDK, plan=None):
             RDK.Save(os.path.join(HERE, STATION_NAME + ".rdk"), cell.station)
         return cell
     finally:
-        B.GEN_DIR, B.ARC_ON_SRC, B.ARC_OFF_SRC = saved
+        B.GEN_DIR, B.ARC_ON_SRC, B.ARC_OFF_SRC, B.FLANGE_BOLTS = saved
 
 
 def main(argv=None):

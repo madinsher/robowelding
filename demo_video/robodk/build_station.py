@@ -63,6 +63,7 @@ POS_TOWER_X = POS_TILT_HALF_WIDTH + 60.0   # bearing towers at x = +/-680
 POS_FACEPLATE_OFFSET = 250.0      # faceplate centre above the tilt axis (tilt = 0)
 POS_FACEPLATE_RADIUS = 320.0
 POS_FIXTURE_THICK = 30.0          # adapter ring between faceplate and spool flange (spool 30 mm above the faceplate)
+FLANGE_BOLTS = True               # six bolts through the spool flange; the stage-2 station sets False (swing clamps)
 TILT_LIMITS = (-120.0, 120.0)     # the 180 deg index is tilt +90 -> -90 over the top
 ROT_LIMITS = (-720.0, 720.0)
 
@@ -814,7 +815,7 @@ def add_positioner(RDK, cell):
     ]
     for k in range(4):                                                                       # radial T-slots
         plate_shapes.append((box_tris((0, 0, zf - 1), (2 * R - 60, 16, 4), rotz(k * math.pi / 4)), dark))
-    for k in range(6):                                                                       # flange bolts
+    for k in range(6 if FLANGE_BOLTS else 0):                                                # flange bolts
         a = 2 * math.pi * (2 * k + 0.5) / 12
         x, y = 177.5 * math.cos(a), 177.5 * math.sin(a)
         plate_shapes.append((cylinder_tris((x, y, zf + POS_FIXTURE_THICK + 28), (x, y, zf + POS_FIXTURE_THICK + 44), 8, 6), steel))

@@ -17,13 +17,16 @@ Faceplate frame (the positioner's "rot" object): z = 0 is the faceplate top, the
 the flange lies on it; the top face of the flange is at Z_FLANGE_TOP.
 """
 import math
+import os
+import sys
 
-import bpy
-import mathutils
-import numpy as np
+_DEMO = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "demo_video")
+if _DEMO not in sys.path:
+    sys.path.insert(0, _DEMO)
+from cell import layout as L          # noqa: E402  (pure constants)
 
-import tools  # noqa: F401  (demo_video on sys.path)
-from cell import geom as G, layout as L, materials
+# The dimensions below are also read by robodk/build_station2.py, which runs in RoboDK's python without bpy and
+# numpy: this module imports them only inside the functions that need them.
 
 PREFIX = "pos_clamp"
 ANGLES_DEG = (0.0, 90.0, 180.0, 270.0)      # on the T-slots (every 45 deg), between the flange bolt holes (15 + 30 k)
@@ -42,6 +45,7 @@ SWING_PART = 0.65                           # share of the stroke spent swinging
 
 def _local(child, parent, loc, rot=(0.0, 0.0, 0.0)):
     """Parent with an explicit local transform (no world-keeping)."""
+    import mathutils
     child.parent = parent
     child.matrix_parent_inverse = mathutils.Matrix.Identity(4)
     child.matrix_basis = mathutils.Matrix.Translation(loc) @ mathutils.Euler(rot).to_matrix().to_4x4()
@@ -50,6 +54,7 @@ def _local(child, parent, loc, rot=(0.0, 0.0, 0.0)):
 def build(pos):
     """Build the four clamps on the faceplate of ``pos``.  Returns {"clamps": [{"swing": empty, "angle": rad}, ...],
     "objects": [...]}; the swing empties are left clamped (arm over the flange) until animate() keys them."""
+    from cell import geom as G, materials
     rot, col = pos["rot"], pos["collection"]
     steel = materials.get("machined_steel")
     dark = materials.get("dark_metal")
@@ -86,6 +91,7 @@ def build(pos):
 
 def stroke(s):
     """(swing angle [rad], lift [m]) for the 0..1 clamp channel ``s`` (array): 0 = open, 1 = clamped."""
+    import numpy as np
     s = np.clip(np.asarray(s, dtype=float), 0.0, 1.0)
     u = np.clip(s / SWING_PART, 0.0, 1.0)
     u = u * u * (3.0 - 2.0 * u)

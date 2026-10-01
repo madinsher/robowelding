@@ -305,7 +305,7 @@ EXPECTED_STAGE2_PROGRAMS = [
     "DemoCycle2", "Conv_ToLoad", "Conv_ToQC", "Conv_ToEnd", "Pos_RotLoad", "Pos_RotUnload"]
 EXPECTED_STAGE1_PROGRAMS = ["DemoCycle", "Cell_Home", "Robot_Home", "Robot_Transit", "Robot_WeldA", "Robot_WeldB_S4",
                             "Track_Home", "Pos_TiltUp", "Pos_Index180", "Pos_RotStart"]
-EXPECTED_MACROS = ["ArcOn", "ArcOff", "GripperClose", "GripperOpen", "StudsUp", "StudsDown", "TackArcOn", "TackArcOff",
+EXPECTED_MACROS = ["ArcOn", "ArcOff", "GripperClose", "GripperOpen", "ClampsClose", "ClampsOpen", "TackArcOn", "TackArcOff",
                    "ResetParts", "QC_MarkScan"]
 DEMO2_ORDER = ["Cycle2_Home", "KitFlange", "KitElbow", "KitPipe", "TackWeld", "PickTackedSpool", "LoadPositioner",
                "Handler_Park", "DemoCycle", "Pos_RotUnload", "UnloadPositioner", "ToConveyor", "Conveyor_QC",
@@ -359,13 +359,29 @@ def test_mock_build():
     names = set(RDK.names)
     movable, decor = S2.part_placements()
     objs = list(S2.logistics_static_objects()) + ["Handler track bed", "Handler track carriage", "Output conveyor",
-                                                  "Carrier pallet", S2.STUDS_NAME] + list(movable) + list(decor)
+                                                  "Carrier pallet", S2.CLAMPS_NAME, S2.CLAMP_ARMS_OPEN,
+                                                  S2.CLAMP_ARMS_CLOSED] + list(movable) + list(decor)
     for n in objs:
         assert n in names and RDK.names[n].itype == rl.ITEM_TYPE_OBJECT, n
     for n, (_kind, F) in movable.items():
         it = RDK.names[n]
         assert it.parent is cell.logistics and same_pose(it.pose, F), n
-    assert cell.studs.parent is cell.faceplate_frame and ("setVisible", (False,)) in cell.studs.log
+    # swing clamps of the flange: bodies and both arm states ride on the faceplate; the arms start open
+    assert cell.clamps.parent is cell.faceplate_frame
+    assert all(a.parent is cell.faceplate_frame for a in cell.clamp_arms.values())
+    assert ("setVisible", (True,)) in cell.clamp_arms["open"].log
+    assert ("setVisible", (False,)) in cell.clamp_arms["closed"].log
+    bodies, arms_open, arms_closed = S2.clamp_shapes()
+    pts = lambda shapes: [p for tris, _ in shapes for tri in tris for p in tri]              # noqa: E731
+    rad = lambda p: math.hypot(p[0], p[1])                                                   # noqa: E731
+    r_flange = S2.L1.FLANGE_OD * 1000 / 2
+    assert min(rad(p) for p in pts(arms_open)) > r_flange + 20, "an open arm must be clear of the flange being lowered"
+    assert min(rad(p) for p in pts(bodies)) > 215 + 10, "the clamp bodies stand outside the fixture ring"
+    assert min(rad(p) for p in pts(arms_closed)) < r_flange - 15, "a closed arm reaches over the flange rim"
+    assert min(p[2] for p in pts(arms_closed) if rad(p) < r_flange) >= S2.FLANGE_THK - 1e-6, "a closed arm lies on the flange"
+    assert max(p[2] for p in pts(arms_closed)) <= S2.FLANGE_THK + 20, "clamped arms are no higher than a bolt head"
+    assert max(p[2] for p in pts(bodies)) < S2.FLANGE_THK, "the clamp bodies stay below the flange face"
+    assert S2.B.FLANGE_BOLTS is True, "build() must restore the stage-1 flag (the stage-1 station keeps its bolts)"
     for w in ("A", "B"):
         assert cell.curves[w].parent is cell.faceplate_frame
     # ---- programs and macros
@@ -408,11 +424,11 @@ def test_mock_build():
     assert calls_of(cell.programs["TackWeld"]).count("TackArcOn") == n_tacks == 6
     assert sum(1 for k, _ in tw if k == "MoveL") == 2 * n_tacks and sum(1 for k, _ in tw if k == "MoveJ") == n_tacks + 2
     assert sum(1 for k, a in tw if k == "Pause" and a == (S2.TACK_ARC_MS,)) == n_tacks
-    # load / unload: studs, muting, gripper in the right order
+    # load / unload: clamps, muting, gripper in the right order (clamp before the gripper lets go, and back)
     lp = calls_of(cell.programs["LoadPositioner"])
-    assert lp.index("HTrack_Swing") < lp.index("HTrack_Positioner") < lp.index("StudsUp") < lp.index("GripperOpen")
+    assert lp.index("HTrack_Swing") < lp.index("HTrack_Positioner") < lp.index("ClampsClose") < lp.index("GripperOpen")
     up = calls_of(cell.programs["UnloadPositioner"])
-    assert up.index("HTrack_Positioner") < up.index("GripperClose") < up.index("StudsDown")
+    assert up.index("HTrack_Positioner") < up.index("GripperClose") < up.index("ClampsOpen")
     muting = [a for k, a in cell.programs["LoadPositioner"].log if k == "setDO" and a[0] == "LightCurtainMuting"]
     assert muting == [("LightCurtainMuting", 1), ("LightCurtainMuting", 0)]
     # every stage-2 Cartesian target: pose = waypoint, joints = IK near the plan seed (the mock IK echoes the seed)
@@ -452,7 +468,8 @@ class World:
             self.add(name, rl.ITEM_TYPE_FRAME)
         self.add(S2.GRIPPER_NAME, rl.ITEM_TYPE_TOOL)
         self.add(S2.HANDLER_NAME, rl.ITEM_TYPE_ROBOT)
-        self.add(S2.STUDS_NAME, rl.ITEM_TYPE_OBJECT, self.items[S2.FACEPLATE_FRAME])
+        for name in (S2.CLAMPS_NAME, S2.CLAMP_ARMS_OPEN, S2.CLAMP_ARMS_CLOSED):
+            self.add(name, rl.ITEM_TYPE_OBJECT, self.items[S2.FACEPLATE_FRAME])
         for name in cell.part_start:
             self.add(name, rl.ITEM_TYPE_OBJECT, self.items[S2.LOGISTICS_FRAME], cell.part_start[name])
 
@@ -579,6 +596,7 @@ def simulate(cell, world):
     """Walk DemoCycle2 through its calls; returns the list of (event, detail) of the gripper actions."""
     mech = {id(cell.htrack): "x", id(cell.carrier): "carrier_x", id(cell.tilt): "tilt", id(cell.rot): "rot"}
     log = []
+    log_clamps = world.clamp_log = []
 
     def run(pname, depth=0):
         assert depth < 12, pname
@@ -588,8 +606,11 @@ def simulate(cell, world):
             if k == "call":
                 if a in cell.programs:
                     run(a, depth + 1)
-                elif a in ("GripperClose", "GripperOpen", "ResetParts", "StudsUp", "StudsDown"):
+                elif a in ("GripperClose", "GripperOpen", "ResetParts", "ClampsClose", "ClampsOpen"):
                     world.run_macro(a)
+                    if a in ("ClampsClose", "ClampsOpen"):
+                        log_clamps.append((a, pname, world.visible.get(S2.CLAMP_ARMS_CLOSED),
+                                           world.visible.get(S2.CLAMP_ARMS_OPEN)))
                     if a in ("GripperClose", "GripperOpen"):
                         log.append((a, pname, tuple(world.held())))
             elif k in ("MoveJ", "MoveL"):
@@ -632,7 +653,11 @@ def test_cycle_simulation(RDK=None, cell=None):
         it = world.items[n]
         assert it.parent is world.items[S2.LOGISTICS_FRAME] and same_pose(it.PoseAbs(), Fb, 1e-6, 1e-9), n
     assert same_pose(world.pose(P["flange2"]), S2.station_frame(), 1e-6, 1e-9)
-    assert world.visible.get(S2.STUDS_NAME) is False and world.params.get("GRIPPER") == "OPEN"
+    # the clamps: closed after the spool is placed, open before it is lifted and at the end of the cycle
+    assert [c for c in world.clamp_log if c[1] != "Cycle2_Home"] == [
+        ("ClampsClose", "LoadPositioner", True, False), ("ClampsOpen", "UnloadPositioner", False, True)], world.clamp_log
+    assert world.visible.get(S2.CLAMP_ARMS_CLOSED) is False and world.visible.get(S2.CLAMP_ARMS_OPEN) is True
+    assert world.params.get("POS_CLAMPS") == "OPEN" and world.params.get("GRIPPER") == "OPEN"
     assert world.x == S2.HANDLER_HOME_X and world.rot == S2.L2.POS_UNLOAD_ROT and world.carrier_x == S2.L2.CONV_END_X * 1000
     print("   DemoCycle2 simulated: %d gripper actions, spool stored at bay %s, flange 2 on the station"
           % (len(log), S2.L2.STORAGE_TARGET))
