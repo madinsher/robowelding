@@ -16,6 +16,7 @@ import numpy as np
 
 import tools  # noqa: F401
 import layout2 as L2
+import pos_clamps
 from cell import layout as L
 
 INTERP = {"CONSTANT": 0, "LINEAR": 1}
@@ -208,15 +209,16 @@ def apply(scene, P, M):
     if arc1 is not None:
         shift_keys(arc1, off)
 
-    # clamp studs (the stage-1 flange bolts on the faceplate): retracted while the faceplate is empty
+    # the flange is held by swing clamps on the faceplate (pos_clamps), closed by the plan's 0..1 "stud" channel after
+    # the spool has landed and opened before it is lifted.  The stage-1 flange bolts are not shown: nothing comes up
+    # through the bolt holes of the flange
     for k in STUD_KEYS:
         for name in (f"pos_bolt{k}", f"pos_washer{k}"):
             ob = bpy.data.objects.get(name)
-            if ob is None:
-                continue
-            z0 = ob.location[2]
-            ob["stud_z0"] = z0
-            bake(ob, "location", 2, z0 - (1.0 - P["stud"]) * L2.STUD_DROP)
+            if ob is not None:
+                ob.hide_render = ob.hide_viewport = True
+    if M.get("clamps"):
+        pos_clamps.animate(M["clamps"], P["stud"], bake)
 
     # ---------------------------------------------------------------- parts
     parts = M["parts"]

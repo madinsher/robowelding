@@ -4,9 +4,9 @@
 Every command takes --edition ru|en (editions.py, default ru): the language of the texts drawn in the scene (i18n2),
 the logo (branding2), the edit (post/edl_<ed>.json, written by edl.py) and the default output folders
 (out/frames_<ed>, out/preview_<ed>, out/stills_<ed>).
-    ru  the edit splices the finished stage-1 video for the welding part: 1402 scene frames to render
-    en  the stage-1 video has Russian titles burned in, so the welding part is rendered from this scene with the
-        stage-1 cameras (cameras2.S1_SHOTS, scene frame = stage-1 frame + WELD_OFFSET): all 2152 frames of the edit
+    Both editions render all 2152 frames of the edit: the finished stage-1 video has its own titles burned in, so
+    the welding part is rendered from this scene with the stage-1 cameras (cameras2.S1_SHOTS, scene frame = stage-1
+    frame + WELD_OFFSET).  (editions.py stage1="video" would splice the stage-1 video instead: 1402 frames.)
 
     python3 build2.py --still 1332 [--res 960 540] [--engine CYCLES]     one frame (scene frame number)
     python3 build2.py --stills 115,512,1332                             several frames
@@ -16,7 +16,7 @@ the logo (branding2), the edit (post/edl_<ed>.json, written by edl.py) and the d
     python3 build2.py --edition en --render                             the English edition (stage-1 shots included)
     python3 build2.py --shot S2_08_load --render                        only the frames of one shot
     python3 build2.py --shot S2_08_load                                 the middle frame of one shot (test still)
-    python3 build2.py --edition en --shot S1_C3a_laser                  a stage-1 shot (en only: ru splices the video)
+    python3 build2.py --edition en --shot S1_C3a_laser                  a stage-1 welding shot
     python3 build2.py --sketch                                          layout sketches (top + 3/4) -> deliverables/
                                                                         (en: layout_top_en.png, layout_34_en.png)
     python3 build2.py --save out/stage2.blend                           save the scene for inspection in Blender
@@ -41,6 +41,7 @@ import bpy  # noqa: E402
 from cell import layout as L, geom as G, spool, positioner, robot_build, animation, environment, vfx  # noqa: E402
 import layout2 as L2  # noqa: E402
 import plan2  # noqa: E402
+import pos_clamps  # noqa: E402
 
 OUT = os.path.join(HERE, "out")
 SHADOW_LIGHTS = {"env_light_key", "ArcLight", "env2_light_key"}
@@ -76,6 +77,7 @@ def build_scene(with_env=True, with_vfx=True, verbose=True, edition=None):
     import fonts2
     fonts2.patch_stage1()                      # stage-1 paint markings with the shipped fonts (any OS)
     pos = positioner.build()
+    clamps = pos_clamps.build(pos)             # swing clamps on the faceplate: they hold the flange
     sp = spool.build(name="spool")
     G.set_parent(sp["root"], pos["mount"], keep_world=False)
     rob = robot_build.build()
@@ -121,7 +123,7 @@ def build_scene(with_env=True, with_vfx=True, verbose=True, edition=None):
     # ---- animation
     import animation2
     t0 = time.time()
-    M = dict(pos=pos, robot=rob, spool=sp, parts=prt, extra=extra, handler=hnd, tack=tck, station=stn,
+    M = dict(pos=pos, clamps=clamps, robot=rob, spool=sp, parts=prt, extra=extra, handler=hnd, tack=tck, station=stn,
              conveyor=conv, qc=qc, mark=mark, storage=sto, env2=env2, kit=kit)
     animation2.apply(sc, P, M)
     if verbose:
@@ -151,8 +153,8 @@ def build_scene(with_env=True, with_vfx=True, verbose=True, edition=None):
         if verbose:
             print(f"[build2] vfx in {time.time() - t0:.1f}s", flush=True)
     import cameras2
-    # the shots of both editions: the stage-1 shots (S1_*, event "weld_offset") are in the en edit only - ru splices
-    # the stage-1 video over their frames, so their markers are never reached by its renders
+    # every shot: the stage-1 shots (S1_*, event "weld_offset") are in the edit of the "render" editions; a "video"
+    # edition splices the stage-1 video over their frames, so their markers are never reached by its renders
     cams = cameras2.build(sc, cameras2.events_of(P), shots=cameras2.ALL_SHOTS)
     if verbose:
         npoly = sum(len(o.data.polygons) for o in bpy.data.objects if o.type == 'MESH')
@@ -402,9 +404,9 @@ def main():
     ap.add_argument("--preview", action="store_true", help="every --step-th frame of the edit at 640x360 "
                     "(default outdir out/preview_<edition>)")
     ap.add_argument("--render", action="store_true", help="every frame of the edition's edit (post/edl_<edition>.json)"
-                    " at 1920x1080 (default outdir out/frames_<edition>): ru 1402 frames, en 2152")
+                    " at 1920x1080 (default outdir out/frames_<edition>): 2152 frames per edition")
     ap.add_argument("--shot", type=str, help="restrict --preview/--render to one shot of the edition's edit (cameras2 "
-                    "name; S1_* stage-1 shots: en only); alone: its middle frame")
+                    "name; S1_* = the stage-1 welding shots); alone: its middle frame")
     ap.add_argument("--first", type=int, default=None, help="restrict to scene frames >= first")
     ap.add_argument("--last", type=int, default=None, help="restrict to scene frames <= last")
     ap.add_argument("--worker", type=str, default=None, help="k/K: render the k-th of K contiguous blocks")
