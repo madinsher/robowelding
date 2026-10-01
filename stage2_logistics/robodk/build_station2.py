@@ -1280,6 +1280,130 @@ class Cell2(B.Cell):
         self.problems = []
 
 
+def library_dirs(RDK):
+    """RoboDK library folders to search, the user's PATH_LIBRARY first (Documents/RoboDK on a default install), then
+    the library of the RoboDK installation: $ROBODK_LIBRARY, next to the robodk python package (<RoboDK>/Python/robodk),
+    the default install folders.  Only existing, distinct folders."""
+    dirs = []
+    try:
+        dirs.append(RDK.getParam("PATH_LIBRARY") or "")
+    except Exception:
+        pass
+    dirs.append(os.environ.get("ROBODK_LIBRARY", ""))
+    pkg = os.path.dirname(os.path.abspath(rl.__file__))
+    dirs.append(os.path.join(os.path.dirname(os.path.dirname(pkg)), "Library"))
+    for var in ("ProgramFiles", "ProgramFiles(x86)"):
+        if os.environ.get(var):
+            dirs.append(os.path.join(os.environ[var], "RoboDK", "Library"))
+    dirs.append(r"C:\RoboDK\Library")
+    out, seen = [], set()
+    for d in dirs:
+        key = os.path.normcase(os.path.abspath(d)) if d else None
+        if d and os.path.isdir(d) and key not in seen:
+            seen.add(key)
+            out.append(d)
+    return out
+
+
+def find_library_file(RDK, patterns):
+    """Replaces B.find_library_file during build(): the first pattern that matches in any library folder wins, and
+    among its matches the shortest file name - "ABB-IRB-6700-150-3-20.robot" before "...-3-20-LeanID.robot", a
+    different dress pack of the same robot.  Returns (path or None, the first library folder)."""
+    dirs = library_dirs(RDK)
+    lib = dirs[0] if dirs else RDK.getParam("PATH_LIBRARY")
+    for pat in patterns:
+        for d in dirs:
+            hits = set()
+            for root in (d, os.path.join(d, "**")):
+                for pp in (pat, pat.lower()):
+                    hits.update(glob.glob(os.path.join(root, pp), recursive=True))
+            if hits:
+                return sorted(hits, key=lambda h: (len(os.path.basename(h)), h))[0], lib
+    return None, lib
+
+
+def flange_at_zero(mech, ndof):
+    """Replaces B.flange_at_zero during build(): the identity, as the stage-1 docstring says for the mechanisms built
+    here.  RoboDK 5.9 reports the base pose inside SolveFK (SolveFK(0) = the base pose, and SolveFK(0) outright fails
+    for the stage-2 tracks, whose travel excludes 0), while the callers already pass the pose of the mounted item
+    relative to the mechanism base: mount_on_flange then needs no flange pose at all."""
+    return eye(4)
+
+
+class RDKProxy:
+    """Forwards everything to the Robolink; BuildMechanism additionally puts the new mechanism's Base frame back at the
+    station origin.  RoboDK 5.9 creates the frame of a 1-axis mechanism at (0, 1000, 0) whatever ``base`` is and shifts
+    all the link geometry (given in world mm) with it - measured with a scratch mechanism: the same 3000 mm bed that was
+    built at y = -1500...1500 showed up at -500...2500.  With the frame at the origin the geometry stands where it was
+    built, and SolveFK keeps returning the pose with the base.  An older RoboDK that puts the frame at ``base`` (not at
+    (0, 1000, 0)) is left alone."""
+
+    def __init__(self, rdk):
+        self._rdk = rdk
+        self.mechanism_bases = {}          # built mechanism -> the ``base`` pose it was built with
+        self.base_in_fk = False            # True once the RoboDK 5.9 behaviour was seen (SolveFK includes the base)
+
+    def __getattr__(self, name):
+        return getattr(self._rdk, name)
+
+    @staticmethod
+    def key(item):
+        return getattr(item, "item", None) or id(item)
+
+    def BuildMechanism(self, *args, **kwargs):
+        mech = self._rdk.BuildMechanism(*args, **kwargs)
+        if mech.Valid():
+            self.mechanism_bases[self.key(mech)] = kwargs.get("base", args[8] if len(args) > 8 else eye(4))
+            frame = mech.Parent()
+            if frame.Valid() and frame.Type() == rl.ITEM_TYPE_FRAME:
+                T = frame.PoseAbs()
+                if all(abs(a - b) < 1e-6 for a, b in zip(T.Pos(), (0.0, 1000.0, 0.0))):
+                    frame.setPoseAbs(eye(4))
+                    self.base_in_fk = True
+        return mech
+
+
+def mount_on_flange(RDK, item, mech, ndof, pose_in_mech_base):
+    """Replaces B.mount_on_flange during build(): the item rides on the flange of ``mech`` and sits at
+    ``pose_in_mech_base`` (relative to the mechanism base) while the mechanism is at joint 0.  Objects, frames and
+    library robots (their Base frame) take that pose as it is.  A mechanism built here (the faceplate on the tilt axis)
+    already has its own base pose inside SolveFK in RoboDK 5.9, so that pose is taken out once, otherwise the base
+    of the faceplate would be applied twice (faceplate 1630 mm higher than the positioner)."""
+    rel = pose_in_mech_base
+    base = getattr(RDK, "mechanism_bases", {}).get(RDKProxy.key(item))
+    if base is not None and getattr(RDK, "base_in_fk", False):
+        rel = rel * invH(base)
+    holder = item if item.Type() in (rl.ITEM_TYPE_OBJECT, rl.ITEM_TYPE_FRAME) else B.base_frame_of(RDK, item)
+    holder.setParent(mech)
+    holder.setPose(rel)
+    return holder
+
+
+_STAGE1_SOLVE_ROBOT = B.solve_robot
+
+
+def solve_robot(cell, pose_cell, seed=None):
+    """Replaces B.solve_robot during build().  The stage-1 solver takes the base of the welding robot from
+    robot.PoseAbs(), but build() switches rendering off and RoboDK 5.9 then returns the pose from before the last
+    joint change: the IK was solved for a robot standing at the previous track station and reported "unreachable"
+    (Transit, seam A ... 0 % valid).  Here the base comes from the track joint (the same pose
+    robot_base_pose_world gives: verify_station2.py compares it with RoboDK at several track stations)."""
+    try:
+        joints = cell.track.Joints()
+        y = float(joints.list()[0] if hasattr(joints, "list") else list(joints)[0])
+        ref = invH(B.robot_base_pose_world(y))
+    except Exception:
+        return _STAGE1_SOLVE_ROBOT(cell, pose_cell, seed)
+    robot = cell.robot
+    q = robot.SolveIK(pose_cell, seed if seed is not None else B.ROBOT_Q_HOME, B.tcp_pose(), ref)
+    ql = list(q.tolist()) if isinstance(q, rm.Mat) else list(q)
+    if len(ql) < 6:
+        return None
+    ql = [float(v) for v in ql[:6]]
+    robot.setJoints(ql)
+    return ql
+
+
 def add_library_robot(RDK, globs, model, what):
     """Robot from the RoboDK library folder (first glob match); a file dialog if it is not there."""
     path, lib = B.find_library_file(RDK, globs)
@@ -1611,19 +1735,49 @@ def set_start_state(cell):
     cell.robot.setJoints(B.ROBOT_Q_HOME)
 
 
+def hide_targets(cell):
+    """Hide the target markers one by one.  Not Program.ShowTargets(False): RoboDK 5.9 then takes the targets of that
+    program into the program and every other program that uses them (Transit, TackHome, ...) loses them - measured
+    with two programs sharing one target: afterwards neither of them resolves it."""
+    for t in cell.targets.values():
+        try:
+            t.setVisible(False, False)
+        except TypeError:                          # a Robolink without the second argument
+            t.setVisible(False)
+
+
 def update_programs(cell, names):
     for name in names:
         prog = cell.programs[name]
-        prog.ShowTargets(False)
+        if name in PROGRAM_STATES:
+            B.set_state(cell, *PROGRAM_STATES[name])
         try:
             ok, t_s, dist, frac, problems = prog.Update(rl.COLLISION_OFF)
-            if frac < 1.0:
+            if frac < 1.0 and name in KNOWN_PARTIAL:
+                print("Program %s: %.0f%% of the path is valid (known: %s)" % (name, frac * 100, KNOWN_PARTIAL[name]))
+            elif frac < 1.0:
                 msg = "Program %s: %.0f%% of the path is valid - %s" % (name, frac * 100, problems)
                 cell.problems.append(msg)
                 print(msg)
         except Exception as exc:
             print("Program %s: Update failed (%s)" % (name, exc))
 
+
+# Station state (track y, tilt, faceplate) each stage-1 welding program was built for (stage-1 add_robot_programs): its
+# torch targets are world poses that the robot reaches only with the track at the right station, so Update() from the
+# home state would call them unreachable.  build() and verify_station2.py check every program in its own state.
+PROGRAM_STATES = {}
+# Programs that are only partly reachable by design: not a build error, reported as a note.  Measured in RoboDK 5.9:
+# 21 of the 99 torch targets of the explicit MoveL alternative for seam A (the part stands still, the robot drives the
+# torch round the whole circle) have no IK solution; DemoCycle / DemoCycle2 weld seam A with the positioner turning
+# the part instead and do not use this program.
+KNOWN_PARTIAL = {"Robot_WeldA_MoveL": "alternative seam-A program, part of the circle is outside the robot's reach"}
+for _names, _state in ((("Robot_Transit", "Robot_ApproachA", "Robot_ScanA", "Robot_WeldA", "Robot_WeldA_MoveL"),
+                        (B.TRACK_A, B.TILT_B1, B.ROT_A0)),
+                       (("Robot_ApproachB1", "Robot_WeldB_S1", "Robot_WeldB_S2"), (B.TRACK_B1, B.TILT_B1, B.ROT_A1)),
+                       (("Robot_ApproachB2", "Robot_WeldB_S3", "Robot_WeldB_S4"), (B.TRACK_B2, B.TILT_B2, B.ROT_A1))):
+    for _n in _names:
+        PROGRAM_STATES[_n] = _state
 
 STAGE1_ROBOT_PROGRAMS = ("Robot_Transit", "Robot_ApproachA", "Robot_ScanA", "Robot_WeldA", "Robot_ApproachB1",
                          "Robot_WeldB_S1", "Robot_WeldB_S2", "Robot_ApproachB2", "Robot_WeldB_S3", "Robot_WeldB_S4",
@@ -1632,12 +1786,18 @@ STAGE1_ROBOT_PROGRAMS = ("Robot_Transit", "Robot_ApproachA", "Robot_ScanA", "Rob
 
 def build(RDK, plan=None):
     """Build the full-cycle station in the connected RoboDK instance; returns the Cell2 with all items."""
-    saved = (B.GEN_DIR, B.ARC_ON_SRC, B.ARC_OFF_SRC, B.FLANGE_BOLTS)
+    saved = (B.GEN_DIR, B.ARC_ON_SRC, B.ARC_OFF_SRC, B.FLANGE_BOLTS, B.find_library_file, B.flange_at_zero,
+             B.mount_on_flange, B.solve_robot)
+    B.flange_at_zero = flange_at_zero             # RoboDK 5.9: SolveFK includes the base pose (see flange_at_zero)
+    B.mount_on_flange = mount_on_flange           # ... and a mechanism mounted on a mechanism (see mount_on_flange)
+    B.solve_robot = solve_robot                   # ... and PoseAbs is stale while rendering is off (see solve_robot)
+    B.find_library_file = find_library_file       # the stage-1 loaders (IRB 4600) and the stage-2 ones search all folders
     B.GEN_DIR = GEN_DIR                           # stage-1 generated files (torch.stl, macros) go to our folder
     B.FLANGE_BOLTS = False                        # the flange is held by the swing clamps, not bolted to the faceplate
     B.ARC_ON_SRC = ARC_ON2_SRC.format(part=PART_NAMES["elbow"])
     B.ARC_OFF_SRC = ARC_OFF2_SRC
     try:
+        RDK = RDKProxy(RDK)                       # Base frames of the mechanisms at the origin (see RDKProxy)
         os.makedirs(GEN_DIR, exist_ok=True)
         cell = Cell2()
         cell.plan = load_plan() if plan is None else plan
@@ -1676,7 +1836,10 @@ def build(RDK, plan=None):
         set_start_state(cell)
         # handler programs move the carriage through sub-program calls, which Update() does not simulate: only the
         # welding-robot and the tack-robot programs are checked here
+        RDK.Render(True)                          # with rendering off RoboDK 5.9 keeps the old mechanism poses: false "0 %"
         update_programs(cell, STAGE1_ROBOT_PROGRAMS + ("TackWeld",))
+        set_start_state(cell)
+        hide_targets(cell)
         RDK.setSimulationSpeed(1.0)
         shots = {s["name"]: s for s in stage2_shots()}
         s = shots.get("S2_01_wide")
@@ -1686,7 +1849,8 @@ def build(RDK, plan=None):
             RDK.Save(os.path.join(HERE, STATION_NAME + ".rdk"), cell.station)
         return cell
     finally:
-        B.GEN_DIR, B.ARC_ON_SRC, B.ARC_OFF_SRC, B.FLANGE_BOLTS = saved
+        (B.GEN_DIR, B.ARC_ON_SRC, B.ARC_OFF_SRC, B.FLANGE_BOLTS, B.find_library_file, B.flange_at_zero,
+         B.mount_on_flange, B.solve_robot) = saved
 
 
 def main(argv=None):

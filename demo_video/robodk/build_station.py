@@ -1241,10 +1241,14 @@ def build(RDK):
     add_robot_programs(RDK, cell)
     add_demo_cycle(RDK, cell)
     add_curve_follow_projects(RDK, cell)
+    for t in cell.targets.values():               # hide the target markers one by one: Program.ShowTargets(False) takes the
+        try:                                      # targets into that program in RoboDK 5.9 and the other programs lose them
+            t.setVisible(False, False)
+        except TypeError:
+            t.setVisible(False)
     for name in ("Robot_Transit", "Robot_ApproachA", "Robot_ScanA", "Robot_WeldA", "Robot_ApproachB1", "Robot_WeldB_S1",
                  "Robot_WeldB_S2", "Robot_ApproachB2", "Robot_WeldB_S3", "Robot_WeldB_S4", "Robot_WeldA_MoveL"):
         prog = cell.programs[name]
-        prog.ShowTargets(False)
         try:
             ok, t_s, dist, frac, problems = prog.Update(rl.COLLISION_OFF)
             if frac < 1.0:
